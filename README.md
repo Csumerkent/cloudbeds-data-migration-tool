@@ -60,6 +60,12 @@ The system follows a structured, stage-based workflow:
 - [Workflow Baseline](docs/workflows/workflow-baseline.md)
 
 ---
+## Documentation
+
+- Migration Scope → /docs/migration-scope.md
+- Configuration Scope → /docs/configuration-scope.md
+
+These documents define the intended behavior of the system and will evolve during development.
 
 ## 🗺️ Project Roadmap
 
