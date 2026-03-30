@@ -370,6 +370,16 @@ A total of 10 editable URL fields must be available under this section.
 
 These fields represent service base URLs, not endpoint paths.
 
+In the UI, these fields may be displayed using generic slot labels such as:
+
+- Other API URL 1
+- Other API URL 2
+- Other API URL 3
+- ...
+- Other API URL 10
+
+The meaning of each known service URL is determined by slot order and default value, not by a separate editable service-name field.
+
 ---
 
 ### Prefilled Default Values
@@ -377,15 +387,21 @@ These fields represent service base URLs, not endpoint paths.
 #### Main API URL
 - `https://api.cloudbeds.com/api/v1.3`
 
-#### Other API URLs
-- Accounting API URL = `https://api.cloudbeds.com/accounting/v1.0`
-- Fiscal Document API URL = `https://api.cloudbeds.com/fiscal-document/v1`
-- Group Profile API URL = `https://api.cloudbeds.com/group-profile/v1`
-- Pay by Link API URL = `https://api.cloudbeds.com/payments/v2`
-- Insights API URL = `https://api.cloudbeds.com/datainsights/v1.1`
-- PMS v2 API URL = `https://api.cloudbeds.com`
+#### Other API URL Slots
+- Other API URL 1 = `https://api.cloudbeds.com/accounting/v1.0`
+- Other API URL 2 = `https://api.cloudbeds.com/fiscal-document/v1`
+- Other API URL 3 = `https://api.cloudbeds.com/group-profile/v1`
+- Other API URL 4 = `https://api.cloudbeds.com/payments/v2`
+- Other API URL 5 = `https://api.cloudbeds.com/datainsights/v1.1`
+- Other API URL 6 = `https://api.cloudbeds.com`
+- Other API URL 7 = empty
+- Other API URL 8 = empty
+- Other API URL 9 = empty
+- Other API URL 10 = empty
 
-The remaining URL fields must stay empty and editable for future use.
+The first six slots are prefilled with known Cloudbeds service base URLs.
+
+The remaining slots must stay empty and editable for future use.
 
 ---
 
@@ -413,7 +429,8 @@ Endpoint paths must remain internal to the application logic and must be appende
 
 - Main API URL must be used for the main Cloudbeds API flow
 - Other service-specific base URLs must be configurable separately
-- Known service URLs must be prefilled by default
+- Known default service URLs must be assigned by slot order
+- The UI may show generic labels for the 10 URL fields
 - User must be allowed to override any configured URL field
 - Empty additional URL fields must remain available for future Cloudbeds service endpoints
 
@@ -462,6 +479,7 @@ This design also provides future flexibility if Cloudbeds introduces new service
 - Missing Main API URL will block execution
 - Wrong Property ID may cause calls to fail or use incorrect property context
 - Confusing base URLs with endpoint paths may cause invalid configuration design
+- Incorrect slot ordering may map a known service URL to the wrong intended use
 
 ---
 
@@ -477,9 +495,10 @@ This design also provides future flexibility if Cloudbeds introduces new service
 
 - API Configuration must be completed before Source / Room / Rate configuration
 - Main API URL should be prefilled with the current main API default
-- Known service URLs should be prefilled in the Other API URLs section
-- Remaining URL fields must stay editable and blank until needed
+- Other API URL slots 1–6 should be prefilled with the current known service defaults
+- Other API URL slots 7–10 should remain editable and blank until needed
 - UI must display service base URLs only
+- UI may use generic labels such as Other API URL 1–10
 - Endpoint paths must remain internal to the application logic
 
 ---

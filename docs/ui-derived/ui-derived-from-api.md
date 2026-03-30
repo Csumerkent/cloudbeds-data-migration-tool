@@ -320,6 +320,16 @@ This section must contain exactly 10 editable URL fields.
 
 These fields represent service base URLs, not endpoint paths.
 
+In the actual UI, these fields may be displayed using generic labels such as:
+
+- Other API URL 1
+- Other API URL 2
+- Other API URL 3
+- ...
+- Other API URL 10
+
+The UI must NOT require a separate editable service-name field for each URL.
+
 ---
 
 ### Prefilled Default Values
@@ -327,13 +337,19 @@ These fields represent service base URLs, not endpoint paths.
 #### Main API URL
 - `https://api.cloudbeds.com/api/v1.3`
 
-#### Other API URLs
-- Accounting API URL = `https://api.cloudbeds.com/accounting/v1.0`
-- Fiscal Document API URL = `https://api.cloudbeds.com/fiscal-document/v1`
-- Group Profile API URL = `https://api.cloudbeds.com/group-profile/v1`
-- Pay by Link API URL = `https://api.cloudbeds.com/payments/v2`
-- Insights API URL = `https://api.cloudbeds.com/datainsights/v1.1`
-- PMS v2 API URL = `https://api.cloudbeds.com`
+#### Other API URL Slots
+- Other API URL 1 = `https://api.cloudbeds.com/accounting/v1.0`
+- Other API URL 2 = `https://api.cloudbeds.com/fiscal-document/v1`
+- Other API URL 3 = `https://api.cloudbeds.com/group-profile/v1`
+- Other API URL 4 = `https://api.cloudbeds.com/payments/v2`
+- Other API URL 5 = `https://api.cloudbeds.com/datainsights/v1.1`
+- Other API URL 6 = `https://api.cloudbeds.com`
+- Other API URL 7 = empty
+- Other API URL 8 = empty
+- Other API URL 9 = empty
+- Other API URL 10 = empty
+
+The first six slots must be prefilled with known Cloudbeds service base URLs.
 
 The remaining URL fields must remain empty and editable.
 
@@ -368,8 +384,8 @@ The application code must append endpoint paths to the configured service base U
    - Main API URL
 
 2. User reviews or updates:
-   - prefilled known service base URLs
-   - additional empty URL fields if needed
+   - prefilled URL slots 1–6
+   - additional empty URL slots 7–10 if needed
 
 3. User clicks **Test Connection**
 
@@ -399,8 +415,8 @@ The application code must append endpoint paths to the configured service base U
 - Property ID is a required execution context value
 - API Key is required for authentication
 - Main API URL is the primary Cloudbeds API service base URL used by the application
-- Other API URLs exist because some Cloudbeds services use different service-specific base paths or versions
-- Known service URLs must be prefilled by default
+- Other API URL slots exist because some Cloudbeds services use different service-specific base paths or versions
+- Known default service URLs are assigned by slot order
 - User must be allowed to override any configured URL field
 - Empty URL fields must remain available for future Cloudbeds service URLs
 - These values must remain available for all configuration and execution steps
