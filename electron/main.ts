@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
 
 const DIST = path.join(__dirname, '../dist');
@@ -29,6 +29,42 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+// IPC: Test Cloudbeds API connection
+ipcMain.handle(
+  'test-connection',
+  async (_event, params: { mainApiUrl: string; apiKey: string; propertyId: string }) => {
+    const url = `${params.mainApiUrl.replace(/\/+$/, '')}/getHotelDetails?propertyID=${encodeURIComponent(params.propertyId)}`;
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'x-api-key': params.apiKey,
+          accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          return { success: false, message: 'Invalid API key.' };
+        }
+        if (response.status === 404) {
+          return { success: false, message: 'Invalid property ID.' };
+        }
+        return { success: false, message: `Connection failed. (HTTP ${response.status})` };
+      }
+
+      const data = await response.json();
+      if (data && data.success === true) {
+        return { success: true, message: 'Connection successful.' };
+      }
+      return { success: false, message: 'Connection failed. Unexpected API response.' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      return { success: false, message: `Connection failed. ${msg}` };
+    }
+  },
+);
 
 app.whenReady().then(createWindow);
 
