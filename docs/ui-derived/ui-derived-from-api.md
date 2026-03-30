@@ -298,11 +298,9 @@ This instruction must be displayed at the top of the Rate Configuration UI.
 ### Purpose
 Provide a UI section where the user enters the API connection values required before any Cloudbeds configuration or reservation execution step.
 
-The UI must support:
-- one main API URL
-- multiple additional service-specific API URLs
+This section must collect service base URLs only.
 
-This is required because Cloudbeds services do not all use a single shared URL structure.
+It must NOT collect or display individual endpoint paths.
 
 ---
 
@@ -320,21 +318,45 @@ It must also contain a separate grouped section titled:
 
 This section must contain exactly 10 editable URL fields.
 
-Known service URL fields must be prefilled:
-- Accounting API URL
-- Fiscal Document API URL
-- Group Profile API URL
-- Pay by Link API URL
-- Insights API URL
-- PMS v2 API URL
+These fields represent service base URLs, not endpoint paths.
+
+---
+
+### Prefilled Default Values
+
+#### Main API URL
+- `https://api.cloudbeds.com/api/v1.3`
+
+#### Other API URLs
+- Accounting API URL = `https://api.cloudbeds.com/accounting/v1.0`
+- Fiscal Document API URL = `https://api.cloudbeds.com/fiscal-document/v1`
+- Group Profile API URL = `https://api.cloudbeds.com/group-profile/v1`
+- Pay by Link API URL = `https://api.cloudbeds.com/payments/v2`
+- Insights API URL = `https://api.cloudbeds.com/datainsights/v1.1`
+- PMS v2 API URL = `https://api.cloudbeds.com`
 
 The remaining URL fields must remain empty and editable.
 
 The UI must also contain:
 
 - Test Connection button
-
 - status area for success / error / validation result
+
+---
+
+### Critical UI Rule
+
+The UI must NOT ask the user to enter endpoint paths such as:
+
+- `/getRoomTypes`
+- `/getRooms`
+- `/getSources`
+- `/getRatePlans`
+- `/postReservation`
+
+These endpoint paths must remain internal to the application logic.
+
+The application code must append endpoint paths to the configured service base URLs when making requests.
 
 ---
 
@@ -346,7 +368,7 @@ The UI must also contain:
    - Main API URL
 
 2. User reviews or updates:
-   - prefilled known service URLs
+   - prefilled known service base URLs
    - additional empty URL fields if needed
 
 3. User clicks **Test Connection**
@@ -376,8 +398,8 @@ The UI must also contain:
 
 - Property ID is a required execution context value
 - API Key is required for authentication
-- Main API URL is the primary Cloudbeds API URL used by the application
-- Other API URLs exist because some Cloudbeds services use different service-specific paths or versions
+- Main API URL is the primary Cloudbeds API service base URL used by the application
+- Other API URLs exist because some Cloudbeds services use different service-specific base paths or versions
 - Known service URLs must be prefilled by default
 - User must be allowed to override any configured URL field
 - Empty URL fields must remain available for future Cloudbeds service URLs
@@ -394,7 +416,13 @@ The UI must clearly distinguish:
 
 The grouped "Other API URLs" section must be visually separated from the main API settings.
 
-This is intended to make future service endpoint changes manageable without changing application code.
+Each field in the "Other API URLs" section should clearly indicate that it expects a service base URL.
+
+A helper note or tooltip should explain:
+
+- "Enter the service base URL only, not individual endpoint paths."
+
+This design keeps future service changes manageable without changing the configuration model.
 
 ---
 

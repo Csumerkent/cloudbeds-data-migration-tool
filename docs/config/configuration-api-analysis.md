@@ -344,6 +344,16 @@ Without this resolution:
 
 ## API Configuration
 
+### Purpose
+
+Define the connection settings required for the application to communicate with Cloudbeds APIs.
+
+This configuration is for service base URLs only.
+
+It must NOT be used to configure individual endpoint paths.
+
+---
+
 ### Required Fields
 
 The application must allow configuration of:
@@ -356,28 +366,53 @@ In addition, the application must provide a separate section for:
 
 ### Other API URLs
 
-A total of 10 URL fields must be available under this section.
+A total of 10 editable URL fields must be available under this section.
 
-Known service URLs must be prefilled:
-- Accounting API URL
-- Fiscal Document API URL
-- Group Profile API URL
-- Pay by Link API URL
-- Insights API URL
-- PMS v2 API URL
+These fields represent service base URLs, not endpoint paths.
+
+---
+
+### Prefilled Default Values
+
+#### Main API URL
+- `https://api.cloudbeds.com/api/v1.3`
+
+#### Other API URLs
+- Accounting API URL = `https://api.cloudbeds.com/accounting/v1.0`
+- Fiscal Document API URL = `https://api.cloudbeds.com/fiscal-document/v1`
+- Group Profile API URL = `https://api.cloudbeds.com/group-profile/v1`
+- Pay by Link API URL = `https://api.cloudbeds.com/payments/v2`
+- Insights API URL = `https://api.cloudbeds.com/datainsights/v1.1`
+- PMS v2 API URL = `https://api.cloudbeds.com`
 
 The remaining URL fields must stay empty and editable for future use.
+
+---
+
+### Critical Rule
+
+Other API URLs means service base URLs only.
+
+The application must NOT ask users to configure endpoint paths such as:
+
+- `/getRoomTypes`
+- `/getRooms`
+- `/getSources`
+- `/getRatePlans`
+- `/postReservation`
+
+Endpoint paths must remain internal to the application logic and must be appended in code to the configured base URLs.
 
 ---
 
 ### Behavior
 
 - All API calls must include:
-  - API Key (authentication)
-  - Property ID (context)
+  - API Key for authentication when required
+  - Property ID for property context when required
 
 - Main API URL must be used for the main Cloudbeds API flow
-- Other service-specific URLs must be configurable separately
+- Other service-specific base URLs must be configurable separately
 - Known service URLs must be prefilled by default
 - User must be allowed to override any configured URL field
 - Empty additional URL fields must remain available for future Cloudbeds service endpoints
@@ -399,10 +434,14 @@ The remaining URL fields must stay empty and editable for future use.
 
 ### Why This Configuration Is Required
 
-Cloudbeds API endpoints do not all use a single shared URL structure.
+Cloudbeds services do not all use a single identical base URL structure.
 
-Different services may use different versions or service-specific paths.
-Because of this, the application must allow the main API URL and additional service URLs to be configured separately.
+Different services may use different service roots and version paths.
+Because of this, the application must allow the main API URL and additional service base URLs to be configured separately.
+
+User configuration should define only service roots.
+
+Operational endpoints belong to the implementation layer, not to the configuration UI.
 
 This design also provides future flexibility if Cloudbeds introduces new service endpoints.
 
@@ -419,9 +458,10 @@ This design also provides future flexibility if Cloudbeds introduces new service
 
 ### Risks
 
-- Incorrect service URL configuration may break API calls
+- Incorrect service base URL configuration may break API calls
 - Missing Main API URL will block execution
 - Wrong Property ID may cause calls to fail or use incorrect property context
+- Confusing base URLs with endpoint paths may cause invalid configuration design
 
 ---
 
@@ -429,6 +469,7 @@ This design also provides future flexibility if Cloudbeds introduces new service
 
 - Which URL should be used for connection testing when multiple service URLs are configured?
 - Should individual service URLs be tested separately in future versions?
+- Should different authentication models per service be represented explicitly in later phases?
 
 ---
 
@@ -438,6 +479,8 @@ This design also provides future flexibility if Cloudbeds introduces new service
 - Main API URL should be prefilled with the current main API default
 - Known service URLs should be prefilled in the Other API URLs section
 - Remaining URL fields must stay editable and blank until needed
+- UI must display service base URLs only
+- Endpoint paths must remain internal to the application logic
 
 ---
 
