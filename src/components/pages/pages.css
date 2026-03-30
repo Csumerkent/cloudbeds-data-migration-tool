@@ -1,0 +1,164 @@
+.config-page {
+  max-width: 720px;
+}
+
+.config-page h3 {
+  font-size: 1.1rem;
+  margin-bottom: 16px;
+}
+
+.config-note {
+  background: #fff8e1;
+  border-left: 3px solid #f9a825;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  color: #6d5a00;
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.config-field {
+  margin-bottom: 16px;
+}
+
+.config-field label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #444;
+}
+
+.config-field input,
+.config-field input[type="text"],
+.config-field input[type="file"] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.config-field input:read-only {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.config-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.config-row .config-field {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.config-row button {
+  flex-shrink: 0;
+  align-self: flex-end;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-primary {
+  background: #1a73e8;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #1558b0;
+}
+
+.btn-secondary {
+  background: #e0e0e0;
+  color: #333;
+}
+
+.btn-secondary:hover {
+  background: #ccc;
+}
+
+.status-area {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.status-area--idle {
+  background: #f5f5f5;
+  color: #888;
+}
+
+.status-area--success {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-area--error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.config-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+}
+
+.config-section h4 {
+  font-size: 0.95rem;
+  margin-bottom: 12px;
+  color: #333;
+}
+
+.config-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 0.85rem;
+}
+
+.config-checkbox input[type="checkbox"] {
+  width: auto;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 24px;
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
+.summary-grid dt {
+  color: #666;
+}
+
+.summary-grid dd {
+  font-weight: 600;
+}
+
+.error-list {
+  list-style: none;
+  font-size: 0.85rem;
+}
+
+.error-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid #f0f0f0;
+  color: #c62828;
+}
