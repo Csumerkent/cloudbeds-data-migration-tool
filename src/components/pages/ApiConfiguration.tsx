@@ -1,9 +1,8 @@
 import { useState } from 'react';
+import { testConnection } from '../../services/apiConfigurationService';
 import './pages.css';
 
-type ConnectionStatus = 'idle' | 'success' | 'error';
-
-const OTHER_URL_COUNT = 10;
+type ConnectionStatus = 'idle' | 'loading' | 'success' | 'error';
 
 const INITIAL_OTHER_URLS: string[] = [
   'https://api.cloudbeds.com/accounting/v1.0',
@@ -24,24 +23,20 @@ function ApiConfiguration() {
   const [mainApiUrl, setMainApiUrl] = useState('https://api.cloudbeds.com/api/v1.3');
   const [otherUrls, setOtherUrls] = useState<string[]>(INITIAL_OTHER_URLS);
   const [status, setStatus] = useState<ConnectionStatus>('idle');
+  const [statusMessage, setStatusMessage] = useState('Not tested yet.');
 
-  const handleTestConnection = () => {
-    // Placeholder: simulate local UI state only, no real API call
-    if (mainApiUrl && apiKey && propertyId) {
-      setStatus('success');
-    } else {
-      setStatus('error');
-    }
+  const handleTestConnection = async () => {
+    setStatus('loading');
+    setStatusMessage('Testing connection...');
+
+    const result = await testConnection({ mainApiUrl, apiKey, propertyId });
+
+    setStatus(result.success ? 'success' : 'error');
+    setStatusMessage(result.message);
   };
 
   const updateOtherUrl = (index: number, value: string) => {
     setOtherUrls((prev) => prev.map((u, i) => (i === index ? value : u)));
-  };
-
-  const statusMessages: Record<ConnectionStatus, string> = {
-    idle: 'Not tested yet.',
-    success: 'Connection parameters look valid. (No real API call made.)',
-    error: 'Please fill in all fields before testing.',
   };
 
   return (
@@ -99,13 +94,14 @@ function ApiConfiguration() {
       <button
         className="btn btn-primary"
         onClick={handleTestConnection}
+        disabled={status === 'loading'}
         style={{ marginTop: 16 }}
       >
-        Test Connection
+        {status === 'loading' ? 'Testing...' : 'Test Connection'}
       </button>
 
-      <div className={`status-area status-area--${status}`}>
-        {statusMessages[status]}
+      <div className={`status-area status-area--${status === 'loading' ? 'idle' : status}`}>
+        {statusMessage}
       </div>
     </div>
   );
