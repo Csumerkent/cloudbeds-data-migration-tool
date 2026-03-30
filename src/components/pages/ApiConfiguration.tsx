@@ -3,29 +3,26 @@ import './pages.css';
 
 type ConnectionStatus = 'idle' | 'success' | 'error';
 
-interface OtherUrl {
-  label: string;
-  value: string;
-}
+const OTHER_URL_COUNT = 10;
 
-const INITIAL_OTHER_URLS: OtherUrl[] = [
-  { label: 'Get Room Types', value: '/getRoomTypes' },
-  { label: 'Get Rooms', value: '/getRooms' },
-  { label: 'Get Sources', value: '/getSources' },
-  { label: 'Get Rate Plans', value: '/getRatePlans' },
-  { label: 'Post Reservation', value: '/postReservation' },
-  { label: 'Get Guests', value: '/getGuests' },
-  { label: 'Get Transactions', value: '/getTransactions' },
-  { label: '', value: '' },
-  { label: '', value: '' },
-  { label: '', value: '' },
+const INITIAL_OTHER_URLS: string[] = [
+  'https://api.cloudbeds.com/accounting/v1.0',
+  'https://api.cloudbeds.com/fiscal-document/v1',
+  'https://api.cloudbeds.com/group-profile/v1',
+  'https://api.cloudbeds.com/payments/v2',
+  'https://api.cloudbeds.com/datainsights/v1.1',
+  'https://api.cloudbeds.com',
+  '',
+  '',
+  '',
+  '',
 ];
 
 function ApiConfiguration() {
   const [apiKey, setApiKey] = useState('');
   const [propertyId, setPropertyId] = useState('');
-  const [mainApiUrl, setMainApiUrl] = useState('https://api.cloudbeds.com/api/v1.2');
-  const [otherUrls, setOtherUrls] = useState<OtherUrl[]>(INITIAL_OTHER_URLS);
+  const [mainApiUrl, setMainApiUrl] = useState('https://api.cloudbeds.com/api/v1.3');
+  const [otherUrls, setOtherUrls] = useState<string[]>(INITIAL_OTHER_URLS);
   const [status, setStatus] = useState<ConnectionStatus>('idle');
 
   const handleTestConnection = () => {
@@ -37,10 +34,8 @@ function ApiConfiguration() {
     }
   };
 
-  const updateOtherUrl = (index: number, field: keyof OtherUrl, value: string) => {
-    setOtherUrls((prev) =>
-      prev.map((u, i) => (i === index ? { ...u, [field]: value } : u)),
-    );
+  const updateOtherUrl = (index: number, value: string) => {
+    setOtherUrls((prev) => prev.map((u, i) => (i === index ? value : u)));
   };
 
   const statusMessages: Record<ConnectionStatus, string> = {
@@ -77,7 +72,7 @@ function ApiConfiguration() {
         <label>Main API URL</label>
         <input
           type="text"
-          placeholder="https://api.cloudbeds.com/api/v1.2"
+          placeholder="https://api.cloudbeds.com/api/v1.3"
           value={mainApiUrl}
           onChange={(e) => setMainApiUrl(e.target.value)}
         />
@@ -85,26 +80,18 @@ function ApiConfiguration() {
 
       <div className="config-section" style={{ marginTop: 20 }}>
         <h4>Other API URLs</h4>
+        <p className="config-note" style={{ marginBottom: 12 }}>
+          Service base URLs only. Endpoint paths are managed internally by the application.
+        </p>
         {otherUrls.map((url, index) => (
-          <div className="config-row" key={index}>
-            <div className="config-field">
-              <label>Service Name</label>
-              <input
-                type="text"
-                placeholder={`Service ${index + 1}`}
-                value={url.label}
-                onChange={(e) => updateOtherUrl(index, 'label', e.target.value)}
-              />
-            </div>
-            <div className="config-field">
-              <label>URL Path</label>
-              <input
-                type="text"
-                placeholder="/endpoint"
-                value={url.value}
-                onChange={(e) => updateOtherUrl(index, 'value', e.target.value)}
-              />
-            </div>
+          <div className="config-field" key={index}>
+            <label>Other API URL {index + 1}</label>
+            <input
+              type="text"
+              placeholder="https://"
+              value={url}
+              onChange={(e) => updateOtherUrl(index, e.target.value)}
+            />
           </div>
         ))}
       </div>
