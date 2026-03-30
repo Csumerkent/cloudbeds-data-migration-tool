@@ -41,11 +41,34 @@ function ReservationExcelInput() {
         <strong>Required columns:</strong> guestName, checkIn, checkOut, roomType,
         roomNumber, source, ratePlan, adults<br />
         <strong>Optional columns:</strong> children, notes, estimatedRevenue,
-        paymentMethod<br /><br />
-        <strong>Format:</strong> Dates must be in YYYY-MM-DD format. All required
-        columns must be present even if some rows have empty optional values.<br />
-        <strong>Limitation:</strong> Only .xlsx files are supported. Maximum file size
-        will be enforced when parsing is implemented.
+        paymentMethod
+      </div>
+
+      <div className="config-note">
+        <strong>Format notes:</strong><br />
+        — Dates must be in YYYY-MM-DD format.<br />
+        — All required columns must be present even if some rows have empty optional
+        values.<br />
+        — Only .xlsx files are supported. Maximum file size will be enforced when
+        parsing is implemented.
+      </div>
+
+      <div className="config-note">
+        <strong>Payment note:</strong><br />
+        Payment information is informational only during migration. Actual payment
+        processing is not performed. The paymentMethod column, if present, is recorded
+        for reference but does not trigger any financial transaction.
+      </div>
+
+      <div className="config-note" style={{ borderLeftColor: '#e53935', background: '#fff3f3', color: '#b71c1c' }}>
+        <strong>Migration limitations:</strong><br />
+        — Reservations are created as new records; existing reservations in Cloudbeds
+        are not modified.<br />
+        — Duplicate detection is based on guest name + check-in + check-out + room.
+        Exact deduplication logic will be finalized during validation implementation.<br />
+        — Financial records (folios, payments) are not migrated in this phase.<br />
+        — Rate resolution depends on matching ratePlanNamePublic to a valid Cloudbeds
+        rate plan. Unresolved rates will be flagged during validation.
       </div>
 
       <div className="config-field">
