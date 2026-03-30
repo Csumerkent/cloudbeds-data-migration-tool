@@ -18,7 +18,6 @@ function createWindow() {
     },
   });
 
-  // In dev mode, Vite dev server URL is injected as env var
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
@@ -30,7 +29,7 @@ function createWindow() {
   });
 }
 
-// IPC: Test Cloudbeds API connection
+// IPC: Test main Cloudbeds API connection
 ipcMain.handle(
   'test-connection',
   async (_event, params: { mainApiUrl: string; apiKey: string; propertyId: string }) => {
@@ -62,6 +61,34 @@ ipcMain.handle(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       return { success: false, message: `Connection failed. ${msg}` };
+    }
+  },
+);
+
+// IPC: Test reachability of a service base URL
+ipcMain.handle(
+  'test-other-url',
+  async (_event, params: { baseUrl: string; testPath: string; apiKey: string }) => {
+    const url = `${params.baseUrl.replace(/\/+$/, '')}${params.testPath}`;
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'x-api-key': params.apiKey,
+          accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      // Reachable: any response from the service (including 400/401/403/422)
+      // Failed: 5xx or no response
+      if (response.status >= 500) {
+        return { reachable: false, message: `Server error (HTTP ${response.status})` };
+      }
+      return { reachable: true, message: `Reachable (HTTP ${response.status})` };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      return { reachable: false, message: `Unreachable. ${msg}` };
     }
   },
 );
