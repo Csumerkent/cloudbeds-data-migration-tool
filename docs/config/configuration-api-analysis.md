@@ -348,9 +348,25 @@ Without this resolution:
 
 The application must allow configuration of:
 
-- API Base URL
 - API Key
 - Property ID
+- Main API URL
+
+In addition, the application must provide a separate section for:
+
+### Other API URLs
+
+A total of 10 URL fields must be available under this section.
+
+Known service URLs must be prefilled:
+- Accounting API URL
+- Fiscal Document API URL
+- Group Profile API URL
+- Pay by Link API URL
+- Insights API URL
+- PMS v2 API URL
+
+The remaining URL fields must stay empty and editable for future use.
 
 ---
 
@@ -359,6 +375,12 @@ The application must allow configuration of:
 - All API calls must include:
   - API Key (authentication)
   - Property ID (context)
+
+- Main API URL must be used for the main Cloudbeds API flow
+- Other service-specific URLs must be configurable separately
+- Known service URLs must be prefilled by default
+- User must be allowed to override any configured URL field
+- Empty additional URL fields must remain available for future Cloudbeds service endpoints
 
 - Property ID must remain constant during execution
 - API Key must be validated before any configuration step
@@ -369,7 +391,53 @@ The application must allow configuration of:
 
 - API Key must not be empty
 - Property ID must not be empty
+- Main API URL must not be empty
+- Other API URL fields are optional
 - API connection should be tested before proceeding to configuration steps
+
+---
+
+### Why This Configuration Is Required
+
+Cloudbeds API endpoints do not all use a single shared URL structure.
+
+Different services may use different versions or service-specific paths.
+Because of this, the application must allow the main API URL and additional service URLs to be configured separately.
+
+This design also provides future flexibility if Cloudbeds introduces new service endpoints.
+
+---
+
+### Data Stored in Application State
+
+- API Key
+- Property ID
+- Main API URL
+- configured Other API URLs
+
+---
+
+### Risks
+
+- Incorrect service URL configuration may break API calls
+- Missing Main API URL will block execution
+- Wrong Property ID may cause calls to fail or use incorrect property context
+
+---
+
+### Open Questions
+
+- Which URL should be used for connection testing when multiple service URLs are configured?
+- Should individual service URLs be tested separately in future versions?
+
+---
+
+### Implementation Note
+
+- API Configuration must be completed before Source / Room / Rate configuration
+- Main API URL should be prefilled with the current main API default
+- Known service URLs should be prefilled in the Other API URLs section
+- Remaining URL fields must stay editable and blank until needed
 
 ---
 

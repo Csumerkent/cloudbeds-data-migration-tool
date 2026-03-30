@@ -298,33 +298,65 @@ This instruction must be displayed at the top of the Rate Configuration UI.
 ### Purpose
 Provide a UI section where the user enters the API connection values required before any Cloudbeds configuration or reservation execution step.
 
+The UI must support:
+- one main API URL
+- multiple additional service-specific API URLs
+
+This is required because Cloudbeds services do not all use a single shared URL structure.
+
 ---
 
 ### Layout
 
 The UI must contain input fields for:
 
-- API Base URL
 - API Key
 - Property ID
+- Main API URL
 
-It must also contain:
+It must also contain a separate grouped section titled:
+
+### Other API URLs
+
+This section must contain exactly 10 editable URL fields.
+
+Known service URL fields must be prefilled:
+- Accounting API URL
+- Fiscal Document API URL
+- Group Profile API URL
+- Pay by Link API URL
+- Insights API URL
+- PMS v2 API URL
+
+The remaining URL fields must remain empty and editable.
+
+The UI must also contain:
 
 - Test Connection button
+
+- status area for success / error / validation result
 
 ---
 
 ### Behavior
 
 1. User enters:
-   - API Base URL
    - API Key
    - Property ID
-2. User clicks **Test Connection**
-3. Application performs a validation API call using the provided values
-4. If connection is successful:
+   - Main API URL
+
+2. User reviews or updates:
+   - prefilled known service URLs
+   - additional empty URL fields if needed
+
+3. User clicks **Test Connection**
+
+4. Application performs a validation call using configured API values
+
+5. If connection is successful:
    - configuration section is marked as valid
-5. If connection fails:
+
+6. If connection fails:
    - show blocking error
    - do not allow proceeding to Source / Room / Rate configuration
 
@@ -332,9 +364,10 @@ It must also contain:
 
 ### Validation
 
-- API Base URL must not be empty
 - API Key must not be empty
 - Property ID must not be empty
+- Main API URL must not be empty
+- Other API URL fields are optional
 - Connection must be validated before proceeding
 
 ---
@@ -343,7 +376,25 @@ It must also contain:
 
 - Property ID is a required execution context value
 - API Key is required for authentication
+- Main API URL is the primary Cloudbeds API URL used by the application
+- Other API URLs exist because some Cloudbeds services use different service-specific paths or versions
+- Known service URLs must be prefilled by default
+- User must be allowed to override any configured URL field
+- Empty URL fields must remain available for future Cloudbeds service URLs
 - These values must remain available for all configuration and execution steps
+
+---
+
+### UI Requirement Note
+
+The UI must clearly distinguish:
+
+- Main API URL
+- Other API URLs
+
+The grouped "Other API URLs" section must be visually separated from the main API settings.
+
+This is intended to make future service endpoint changes manageable without changing application code.
 
 ---
 
