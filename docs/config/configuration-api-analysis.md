@@ -393,13 +393,13 @@ The meaning of each known service URL is determined by slot order and default va
 - Other API URL 3 = `https://api.cloudbeds.com/group-profile/v1`
 - Other API URL 4 = `https://api.cloudbeds.com/payments/v2`
 - Other API URL 5 = `https://api.cloudbeds.com/datainsights/v1.1`
-- Other API URL 6 = `https://api.cloudbeds.com`
+- Other API URL 6 = empty
 - Other API URL 7 = empty
 - Other API URL 8 = empty
 - Other API URL 9 = empty
 - Other API URL 10 = empty
 
-The first six slots are prefilled with known Cloudbeds service base URLs.
+The first five slots are prefilled with known Cloudbeds service base URLs.
 
 The remaining slots must stay empty and editable for future use.
 
@@ -418,6 +418,91 @@ The application must NOT ask users to configure endpoint paths such as:
 - `/postReservation`
 
 Endpoint paths must remain internal to the application logic and must be appended in code to the configured base URLs.
+
+---
+
+### Connection Test Rules
+
+A real API connection test must be available in API Configuration.
+
+#### Main API Test
+The main Test Connection action must call:
+
+- `GET {Main API URL}/getHotelDetails?propertyID={Property ID}`
+
+Request headers:
+- `x-api-key: {API Key}`
+- `accept: application/json`
+
+Main API connection is considered successful only if:
+- HTTP status is 200
+- and response contains `success = true`
+
+This test validates the actual Cloudbeds main API access for the configured property.
+
+---
+
+### Service URL Reachability Test
+
+In addition to the main API test, the application should test all configured Other API URL slots individually.
+
+Each configured URL slot should display its own result indicator.
+
+The UI should show a status marker next to:
+- Main API URL
+- each Other API URL field
+
+Example status behavior:
+- reachable / accepted
+- failed
+- not tested
+
+For service URL slot testing, a URL may be considered reachable even if the response is not a business-success response.
+
+Examples of acceptable reachability responses:
+- validation error
+- missing required header error
+- permission denied
+- unauthorized
+- forbidden
+
+These responses still prove that:
+- the base URL is valid
+- the endpoint is reachable
+- the service is responding
+
+The following should generally be treated as reachable:
+- HTTP 200
+- HTTP 400
+- HTTP 401
+- HTTP 403
+- HTTP 422
+
+The following should generally be treated as failed:
+- network error
+- DNS / host resolution error
+- timeout
+- malformed URL
+- no response
+- server unavailable / repeated 5xx behavior
+
+---
+
+### Save Behavior
+
+If the main API connection test succeeds, the application should ask the user whether the API configuration should be saved.
+
+This save prompt applies to at least:
+- API Key
+- Property ID
+
+The application should persist API configuration locally so that values are not lost when the user changes tabs.
+
+At minimum, the following values should persist locally:
+- API Key
+- Property ID
+- Main API URL
+- configured Other API URLs
 
 ---
 
@@ -445,7 +530,8 @@ Endpoint paths must remain internal to the application logic and must be appende
 - Property ID must not be empty
 - Main API URL must not be empty
 - Other API URL fields are optional
-- API connection should be tested before proceeding to configuration steps
+- Main API connection should be tested before proceeding to configuration steps
+- Other API URL fields should be testable individually
 
 ---
 
@@ -462,6 +548,8 @@ Operational endpoints belong to the implementation layer, not to the configurati
 
 This design also provides future flexibility if Cloudbeds introduces new service endpoints.
 
+Local persistence is also required so that users do not lose configuration while navigating between sections.
+
 ---
 
 ### Data Stored in Application State
@@ -470,6 +558,9 @@ This design also provides future flexibility if Cloudbeds introduces new service
 - Property ID
 - Main API URL
 - configured Other API URLs
+- per-URL test status
+
+If local persistence is enabled, these values should also be stored in local application storage.
 
 ---
 
@@ -480,14 +571,15 @@ This design also provides future flexibility if Cloudbeds introduces new service
 - Wrong Property ID may cause calls to fail or use incorrect property context
 - Confusing base URLs with endpoint paths may cause invalid configuration design
 - Incorrect slot ordering may map a known service URL to the wrong intended use
+- Reachability does not always mean the service is fully authorized for actual business use
 
 ---
 
 ### Open Questions
 
-- Which URL should be used for connection testing when multiple service URLs are configured?
-- Should individual service URLs be tested separately in future versions?
-- Should different authentication models per service be represented explicitly in later phases?
+- Should the save prompt appear only after successful main API validation, or also when the user manually changes fields later?
+- Should local persistence be automatic or user-confirmed only on successful connection?
+- Should each service URL have its own dedicated internal endpoint for testing in later phases?
 
 ---
 
@@ -495,11 +587,13 @@ This design also provides future flexibility if Cloudbeds introduces new service
 
 - API Configuration must be completed before Source / Room / Rate configuration
 - Main API URL should be prefilled with the current main API default
-- Other API URL slots 1–6 should be prefilled with the current known service defaults
-- Other API URL slots 7–10 should remain editable and blank until needed
+- Other API URL slots 1–5 should be prefilled with the current known service defaults
+- Other API URL slots 6–10 should remain editable and blank until needed
 - UI must display service base URLs only
 - UI may use generic labels such as Other API URL 1–10
 - Endpoint paths must remain internal to the application logic
+- Main API test must use `getHotelDetails`
+- The application should preserve configuration values locally between tab/page switches
 
 ---
 
@@ -626,9 +720,5 @@ The following must already be configured and resolved:
 - Rate resolution logic
 
 Execution must be blocked if any of the above is missing.
-
-
- configuration-api-analysis.md
-    custom-fields-api-analysis.md
-  https://api.cloudbeds.com/api/v1.3/postCustomField
-  https://api.cloudbeds.com/api/v1.3/getCustomFields
+ 
+---

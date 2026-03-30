@@ -343,20 +343,27 @@ The UI must NOT require a separate editable service-name field for each URL.
 - Other API URL 3 = `https://api.cloudbeds.com/group-profile/v1`
 - Other API URL 4 = `https://api.cloudbeds.com/payments/v2`
 - Other API URL 5 = `https://api.cloudbeds.com/datainsights/v1.1`
-- Other API URL 6 = `https://api.cloudbeds.com`
+- Other API URL 6 = empty
 - Other API URL 7 = empty
 - Other API URL 8 = empty
 - Other API URL 9 = empty
 - Other API URL 10 = empty
 
-The first six slots must be prefilled with known Cloudbeds service base URLs.
+The first five slots must be prefilled with known Cloudbeds service base URLs.
 
 The remaining URL fields must remain empty and editable.
+
+---
+
+### Required UI Elements
 
 The UI must also contain:
 
 - Test Connection button
-- status area for success / error / validation result
+- status area for main API test result
+- per-URL status indicator next to:
+  - Main API URL
+  - each Other API URL field
 
 ---
 
@@ -376,27 +383,90 @@ The application code must append endpoint paths to the configured service base U
 
 ---
 
-### Behavior
+### Main API Test Behavior
 
-1. User enters:
+When the user clicks **Test Connection**:
+
+1. Application validates:
    - API Key
    - Property ID
    - Main API URL
 
-2. User reviews or updates:
-   - prefilled URL slots 1–6
-   - additional empty URL slots 7–10 if needed
+2. Application calls:
 
-3. User clicks **Test Connection**
+- `GET {Main API URL}/getHotelDetails?propertyID={Property ID}`
 
-4. Application performs a validation call using configured API values
+3. Request headers must include:
+- `x-api-key: {API Key}`
+- `accept: application/json`
 
-5. If connection is successful:
-   - configuration section is marked as valid
+4. Main API connection is considered successful only if:
+- HTTP 200
+- and response contains `success = true`
 
-6. If connection fails:
-   - show blocking error
-   - do not allow proceeding to Source / Room / Rate configuration
+5. If successful:
+- show success in the main status area
+- show success indicator next to Main API URL
+- ask the user whether API configuration should be saved
+
+6. If failed:
+- show blocking error in the main status area
+- show failure indicator next to Main API URL
+- do not allow proceeding to Source / Room / Rate configuration
+
+---
+
+### Other API URL Test Behavior
+
+When Test Connection runs, the application should also test each configured Other API URL field.
+
+Each non-empty URL slot should show its own status result.
+
+A service URL may be considered reachable even if the response is not a business-success response.
+
+Examples of acceptable reachability responses:
+- validation error
+- missing required header error
+- permission denied
+- unauthorized
+- forbidden
+
+These still prove that:
+- the base URL is valid
+- the endpoint is reachable
+- the service is responding
+
+The following should generally be treated as reachable:
+- HTTP 200
+- HTTP 400
+- HTTP 401
+- HTTP 403
+- HTTP 422
+
+The following should generally be treated as failed:
+- network error
+- DNS / host resolution error
+- timeout
+- malformed URL
+- no response
+- repeated 5xx server failure
+
+For Other API URL slots, reachable status is informative and should not be treated the same as main API success.
+
+---
+
+### Save and Persistence Behavior
+
+If the main API test succeeds, the UI should ask the user whether the API configuration should be saved.
+
+At minimum, the following values should persist locally so that they are not lost when the user changes tabs:
+
+- API Key
+- Property ID
+- Main API URL
+- configured Other API URLs
+
+These saved values should be restored automatically when the user returns to the API Configuration screen.
 
 ---
 
@@ -406,7 +476,8 @@ The application code must append endpoint paths to the configured service base U
 - Property ID must not be empty
 - Main API URL must not be empty
 - Other API URL fields are optional
-- Connection must be validated before proceeding
+- Main API connection must be validated before proceeding
+- Other API URL fields should be testable individually as part of the same flow
 
 ---
 
@@ -420,6 +491,7 @@ The application code must append endpoint paths to the configured service base U
 - User must be allowed to override any configured URL field
 - Empty URL fields must remain available for future Cloudbeds service URLs
 - These values must remain available for all configuration and execution steps
+- Reachability of a service URL does not always mean the service is fully authorized for actual business use
 
 ---
 
@@ -439,13 +511,6 @@ A helper note or tooltip should explain:
 - "Enter the service base URL only, not individual endpoint paths."
 
 This design keeps future service changes manageable without changing the configuration model.
-
----
-
-## Reservation Excel Input UI Requirements
-
-### Purpose
-Provide a clear UI for uploading and validating the reservation Excel file used for migration.
 
 ---
 
