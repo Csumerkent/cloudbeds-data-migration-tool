@@ -25,12 +25,20 @@ export interface ApiConfigState {
   otherUrls: string[];
 }
 
+export interface ApiGetResult {
+  ok: boolean;
+  status: number;
+  data: unknown;
+  error?: string;
+}
+
 declare global {
   interface Window {
     electronAPI: {
       platform: string;
       testConnection: (params: TestConnectionParams) => Promise<TestConnectionResult>;
       testOtherUrl: (params: { baseUrl: string; testPath: string; apiKey: string }) => Promise<TestOtherUrlResult>;
+      apiGet: (params: { url: string; apiKey: string }) => Promise<ApiGetResult>;
     };
   }
 }

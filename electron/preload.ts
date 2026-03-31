@@ -6,4 +6,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('test-connection', params),
   testOtherUrl: (params: { baseUrl: string; testPath: string; apiKey: string }) =>
     ipcRenderer.invoke('test-other-url', params),
+  apiGet: (params: { url: string; apiKey: string }) =>
+    ipcRenderer.invoke('api-get', params),
 });

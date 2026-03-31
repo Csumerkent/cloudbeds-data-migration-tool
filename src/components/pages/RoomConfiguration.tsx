@@ -1,89 +1,106 @@
 import { useState } from 'react';
+import {
+  fetchRoomData,
+  type CloudbedsRoomType,
+  type CloudbedsRoom,
+} from '../../services/roomConfigurationService';
 import './pages.css';
 
-interface Room {
-  name: string;
+interface RoomMapping {
   mapping: string;
   noMapping: boolean;
 }
 
-interface RoomType {
-  name: string;
+interface RoomTypeEntry {
+  roomType: CloudbedsRoomType;
   mapping: string;
   noMapping: boolean;
-  rooms: Room[];
+  rooms: Array<CloudbedsRoom & RoomMapping>;
 }
 
-const SAMPLE_ROOM_TYPES: RoomType[] = [
-  {
-    name: 'Standard Double',
-    mapping: '',
-    noMapping: false,
-    rooms: [
-      { name: 'Room 101', mapping: '', noMapping: false },
-      { name: 'Room 102', mapping: '', noMapping: false },
-    ],
-  },
-  {
-    name: 'Deluxe Suite',
-    mapping: '',
-    noMapping: false,
-    rooms: [
-      { name: 'Room 201', mapping: '', noMapping: false },
-    ],
-  },
-];
+type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
 
 function RoomConfiguration() {
-  const [roomTypes, setRoomTypes] = useState<RoomType[]>([]);
-  const [fetched, setFetched] = useState(false);
+  const [entries, setEntries] = useState<RoomTypeEntry[]>([]);
+  const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
+  const [statusMessage, setStatusMessage] = useState('');
 
-  const handleGet = () => {
-    // Placeholder: load sample data locally
-    setRoomTypes(SAMPLE_ROOM_TYPES);
-    setFetched(true);
+  const handleGet = async () => {
+    setLoadStatus('loading');
+    setStatusMessage('Loading room types and rooms...');
+
+    const result = await fetchRoomData();
+
+    if (!result.success) {
+      setLoadStatus('error');
+      setStatusMessage(result.message);
+      return;
+    }
+
+    // Group rooms under their room type
+    const roomsByType = new Map<string, CloudbedsRoom[]>();
+    for (const room of result.rooms) {
+      const list = roomsByType.get(room.roomTypeID) ?? [];
+      list.push(room);
+      roomsByType.set(room.roomTypeID, list);
+    }
+
+    const built: RoomTypeEntry[] = result.roomTypes.map((rt) => ({
+      roomType: rt,
+      mapping: '',
+      noMapping: false,
+      rooms: (roomsByType.get(rt.roomTypeID) ?? []).map((r) => ({
+        ...r,
+        mapping: '',
+        noMapping: false,
+      })),
+    }));
+
+    setEntries(built);
+    setLoadStatus('success');
+    setStatusMessage(result.message);
   };
 
   const updateRoomTypeMapping = (rtIndex: number, value: string) => {
-    setRoomTypes((prev) =>
-      prev.map((rt, i) => (i === rtIndex ? { ...rt, mapping: value } : rt)),
+    setEntries((prev) =>
+      prev.map((e, i) => (i === rtIndex ? { ...e, mapping: value } : e)),
     );
   };
 
   const toggleRoomTypeNoMapping = (rtIndex: number) => {
-    setRoomTypes((prev) =>
-      prev.map((rt, i) =>
-        i === rtIndex ? { ...rt, noMapping: !rt.noMapping, mapping: '' } : rt,
+    setEntries((prev) =>
+      prev.map((e, i) =>
+        i === rtIndex ? { ...e, noMapping: !e.noMapping, mapping: '' } : e,
       ),
     );
   };
 
   const updateRoomMapping = (rtIndex: number, rIndex: number, value: string) => {
-    setRoomTypes((prev) =>
-      prev.map((rt, i) =>
+    setEntries((prev) =>
+      prev.map((e, i) =>
         i === rtIndex
           ? {
-              ...rt,
-              rooms: rt.rooms.map((r, j) =>
+              ...e,
+              rooms: e.rooms.map((r, j) =>
                 j === rIndex ? { ...r, mapping: value } : r,
               ),
             }
-          : rt,
+          : e,
       ),
     );
   };
 
   const toggleRoomNoMapping = (rtIndex: number, rIndex: number) => {
-    setRoomTypes((prev) =>
-      prev.map((rt, i) =>
+    setEntries((prev) =>
+      prev.map((e, i) =>
         i === rtIndex
           ? {
-              ...rt,
-              rooms: rt.rooms.map((r, j) =>
+              ...e,
+              rooms: e.rooms.map((r, j) =>
                 j === rIndex ? { ...r, noMapping: !r.noMapping, mapping: '' } : r,
               ),
             }
-          : rt,
+          : e,
       ),
     );
   };
@@ -93,49 +110,82 @@ function RoomConfiguration() {
       <h3>Room Configuration</h3>
 
       <div className="config-note">
-        Fetch room types and rooms from Cloudbeds, then map each to the
-        corresponding entry in your source PMS. Use the &quot;No Mapping&quot;
-        checkbox if a room type or room has no equivalent in the source system.
+        Room configuration is managed in Cloudbeds under{' '}
+        <strong>Settings &rarr; Property &rarr; Accommodation</strong>. At minimum,
+        room types must be defined and room numbers must be created under each room
+        type before fetching.<br /><br />
+        Fetch room types and rooms from Cloudbeds, then map each to the corresponding
+        entry in your source PMS. Use the &quot;No Mapping&quot; checkbox if a room
+        type or room has no equivalent in the source system.
       </div>
 
-      <button className="btn btn-primary" onClick={handleGet}>
-        Get Room Types &amp; Rooms
+      <button
+        className="btn btn-primary"
+        onClick={handleGet}
+        disabled={loadStatus === 'loading'}
+      >
+        {loadStatus === 'loading' ? 'Loading...' : 'Get Room Types & Rooms'}
       </button>
 
-      {fetched && roomTypes.length === 0 && (
+      {statusMessage && (
+        <div
+          className={`status-area status-area--${loadStatus === 'loading' ? 'idle' : loadStatus === 'success' ? 'success' : loadStatus === 'error' ? 'error' : 'idle'}`}
+          style={{ marginTop: 12 }}
+        >
+          {statusMessage}
+        </div>
+      )}
+
+      {loadStatus === 'success' && entries.length === 0 && (
         <div className="status-area status-area--idle" style={{ marginTop: 16 }}>
           No room types returned.
         </div>
       )}
 
-      {roomTypes.map((rt, rtIndex) => (
-        <div className="config-section" key={rt.name} style={{ marginTop: 16 }}>
-          <h4>Room Type: {rt.name}</h4>
+      {entries.map((entry, rtIndex) => (
+        <div className="config-section" key={entry.roomType.roomTypeID} style={{ marginTop: 16 }}>
+          <h4>
+            Room Type: {entry.roomType.roomTypeName}{' '}
+            <span style={{ fontWeight: 400, color: '#888', fontSize: '0.85rem' }}>
+              ({entry.roomType.roomTypeNameShort} &middot; ID: {entry.roomType.roomTypeID})
+            </span>
+          </h4>
           <div className="config-row">
             <div className="config-field">
-              <label>Map to Source Room Type</label>
+              <label>Map to Source Room Type (matches roomTypeNameShort: {entry.roomType.roomTypeNameShort})</label>
               <input
                 type="text"
                 placeholder="Source room type name"
-                value={rt.mapping}
-                disabled={rt.noMapping}
+                value={entry.mapping}
+                disabled={entry.noMapping}
                 onChange={(e) => updateRoomTypeMapping(rtIndex, e.target.value)}
               />
             </div>
             <label className="config-checkbox">
               <input
                 type="checkbox"
-                checked={rt.noMapping}
+                checked={entry.noMapping}
                 onChange={() => toggleRoomTypeNoMapping(rtIndex)}
               />
               No Mapping
             </label>
           </div>
 
-          {rt.rooms.map((room, rIndex) => (
-            <div className="config-row" key={room.name} style={{ marginLeft: 24 }}>
+          {entry.rooms.length === 0 && (
+            <p style={{ fontSize: '0.85rem', color: '#888', marginLeft: 24 }}>
+              No rooms under this room type.
+            </p>
+          )}
+
+          {entry.rooms.map((room, rIndex) => (
+            <div className="config-row" key={room.roomID} style={{ marginLeft: 24 }}>
               <div className="config-field">
-                <label>{room.name}</label>
+                <label>
+                  {room.roomName}{' '}
+                  <span style={{ fontWeight: 400, color: '#999' }}>
+                    (ID: {room.roomID})
+                  </span>
+                </label>
                 <input
                   type="text"
                   placeholder="Source room name"

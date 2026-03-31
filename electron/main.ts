@@ -80,8 +80,6 @@ ipcMain.handle(
         signal: AbortSignal.timeout(10000),
       });
 
-      // Reachable: any response from the service (including 400/401/403/422)
-      // Failed: 5xx or no response
       if (response.status >= 500) {
         return { reachable: false, message: `Server error (HTTP ${response.status})` };
       }
@@ -89,6 +87,29 @@ ipcMain.handle(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       return { reachable: false, message: `Unreachable. ${msg}` };
+    }
+  },
+);
+
+// IPC: Authenticated GET request to a Cloudbeds API endpoint
+ipcMain.handle(
+  'api-get',
+  async (_event, params: { url: string; apiKey: string }) => {
+    try {
+      const response = await fetch(params.url, {
+        method: 'GET',
+        headers: {
+          'x-api-key': params.apiKey,
+          accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+
+      const data = await response.json();
+      return { ok: response.ok, status: response.status, data };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      return { ok: false, status: 0, data: null, error: msg };
     }
   },
 );
