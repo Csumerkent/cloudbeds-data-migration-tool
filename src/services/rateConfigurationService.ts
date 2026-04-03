@@ -1,5 +1,5 @@
 import { loadApiConfig } from './apiConfigurationService';
-import { info, error as logError } from './debugLogger';
+import { debug, info, warn, error as logError } from './debugLogger';
 
 // --- Types ---
 
@@ -56,12 +56,13 @@ export function isValidDate(value: string): boolean {
 
 export async function fetchRates(startDate: string, endDate: string): Promise<FetchRatesResult> {
   if (!isValidDate(startDate) || !isValidDate(endDate)) {
+    logError('RateConfig', 'request', 'Invalid date format', { startDate, endDate });
     return { success: false, message: 'Invalid date format. Use YYYY-MM-DD.', rates: [] };
   }
 
   const config = loadApiConfig();
   if (!config) {
-    logError('RateConfig', 'API configuration not saved');
+    logError('RateConfig', 'request', 'API configuration not saved');
     return { success: false, message: 'API configuration not saved. Please configure and test the API connection first.', rates: [] };
   }
 
@@ -69,32 +70,65 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
   const base = mainApiUrl.replace(/\/+$/, '');
   const url = `${base}/getRatePlans?propertyIDs=${encodeURIComponent(propertyId)}&startDate=${startDate}&endDate=${endDate}`;
 
-  info('RateConfig', 'Fetch started', { url, startDate, endDate });
+  // --- Request stage ---
+  info('RateConfig', 'request', 'Fetch started', { url, propertyId, startDate, endDate });
 
-  const result = await window.electronAPI.apiGet({ url, apiKey });
+  let result;
+  try {
+    result = await window.electronAPI.apiGet({ url, apiKey });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError('RateConfig', 'request', 'Fetch threw exception', { error: msg, stack: err instanceof Error ? err.stack : undefined });
+    return { success: false, message: `Fetch failed: ${msg}`, rates: [] };
+  }
+
+  // --- Response stage ---
+  debug('RateConfig', 'response', 'Raw response received', {
+    ok: result.ok,
+    status: result.status,
+    hasData: result.data != null,
+    typeofData: typeof result.data,
+    error: result.error,
+  });
 
   if (!result.ok || !result.data) {
     const msg = result.error
       ? `Failed to fetch rates. ${result.error}`
       : `Failed to fetch rates. (HTTP ${result.status})`;
-    logError('RateConfig', msg);
+    logError('RateConfig', 'response', msg);
     return { success: false, message: msg, rates: [] };
   }
 
-  const body = result.data as {
-    success?: boolean;
-    data?: unknown;
-  };
+  const body = result.data as { success?: boolean; data?: unknown };
+
+  debug('RateConfig', 'response', 'Body inspection', {
+    'body.success': body.success,
+    'typeof body.data': typeof body.data,
+    'Array.isArray(body.data)': Array.isArray(body.data),
+    'body.data length': Array.isArray(body.data) ? body.data.length : 'N/A',
+  });
 
   if (!body.success) {
-    logError('RateConfig', 'API returned success=false');
-    return { success: false, message: 'Unexpected rates response format.', rates: [] };
+    logError('RateConfig', 'response', 'API returned success=false');
+    return { success: false, message: 'API returned success=false.', rates: [] };
   }
 
-  // Response can be flat array or nested — handle both safely
+  // --- Parse stage ---
   const rawPlans = Array.isArray(body.data) ? body.data : [];
+  info('RateConfig', 'parse', 'Rate parse started', { rawPlanCount: rawPlans.length });
 
-  const rates: CloudbedsRateEntry[] = [];
+  debug('RateConfig', 'parse', 'First 5 raw plans', {
+    plans: rawPlans.slice(0, 5).map((p: Record<string, unknown>) => ({
+      ratePlanNamePublic: p?.ratePlanNamePublic,
+      ratePlanID: p?.ratePlanID,
+      isDerived: p?.isDerived,
+      roomTypesCount: Array.isArray(p?.roomTypes) ? p.roomTypes.length : 0,
+      keys: p ? Object.keys(p).slice(0, 10) : [],
+    })),
+  });
+
+  // Flatten: plan → roomTypes → rates
+  const allRows: CloudbedsRateEntry[] = [];
   for (const plan of rawPlans) {
     if (!plan || typeof plan !== 'object') continue;
     const p = plan as Record<string, unknown>;
@@ -106,7 +140,7 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
       for (const rate of ratesList) {
         if (!rate || typeof rate !== 'object') continue;
         const ra = rate as Record<string, unknown>;
-        rates.push({
+        allRows.push({
           ratePlanNamePublic: String(p.ratePlanNamePublic ?? ''),
           ratePlanNamePrivate: String(p.ratePlanNamePrivate ?? ''),
           ratePlanID: String(p.ratePlanID ?? ''),
@@ -121,12 +155,48 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
     }
   }
 
+  // --- Filtering stage ---
+  const withPublicName = allRows.filter((r) => r.ratePlanNamePublic.trim() !== '');
+  const withPlanId = withPublicName.filter((r) => r.ratePlanID.trim() !== '');
+  const withRoomTypeId = withPlanId.filter((r) => r.roomTypeID.trim() !== '');
+  const validRates = withRoomTypeId.filter((r) => r.rateID.trim() !== '');
+
+  debug('RateConfig', 'filter', 'Filter step counts', {
+    totalFlattened: allRows.length,
+    withRatePlanNamePublic: withPublicName.length,
+    withRatePlanID: withPlanId.length,
+    withRoomTypeID: withRoomTypeId.length,
+    withRateID: validRates.length,
+  });
+
+  debug('RateConfig', 'filter', 'First 10 valid rows', {
+    rows: validRates.slice(0, 10).map((r) => ({
+      ratePlanNamePublic: r.ratePlanNamePublic,
+      ratePlanID: r.ratePlanID,
+      roomTypeName: r.roomTypeName,
+      roomTypeID: r.roomTypeID,
+      rateID: r.rateID,
+    })),
+  });
+
+  if (allRows.length > 0 && validRates.length === 0) {
+    warn('RateConfig', 'filter', 'All rows filtered out', {
+      totalFlattened: allRows.length,
+      sampleDropped: allRows.slice(0, 3).map((r) => ({
+        ratePlanNamePublic: r.ratePlanNamePublic || '(empty)',
+        ratePlanID: r.ratePlanID || '(empty)',
+        roomTypeID: r.roomTypeID || '(empty)',
+        rateID: r.rateID || '(empty)',
+      })),
+    });
+  }
+
   // Persist per property
-  saveRatesCache(propertyId, rates);
+  saveRatesCache(propertyId, validRates);
+  info('RateConfig', 'persist', `Saved ${validRates.length} rate entries to cache for property ${propertyId}`);
 
-  info('RateConfig', `Fetch success — ${rates.length} rate entries across ${rawPlans.length} rate plans`);
-
-  return { success: true, message: `Fetched ${rates.length} rate entries across ${rawPlans.length} rate plans.`, rates };
+  info('RateConfig', 'complete', `Fetch success — ${validRates.length} valid rate entries from ${rawPlans.length} rate plans`);
+  return { success: true, message: `Fetched ${validRates.length} rate entries across ${rawPlans.length} rate plans.`, rates: validRates };
 }
 
 // --- Resolve rate plan ID by public name (case-insensitive exact match, first match) ---

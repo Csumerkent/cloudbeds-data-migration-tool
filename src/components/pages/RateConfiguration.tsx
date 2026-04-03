@@ -7,7 +7,7 @@ import {
   type CloudbedsRateEntry,
 } from '../../services/rateConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
-import { info, warn } from '../../services/debugLogger';
+import { debug, info, warn } from '../../services/debugLogger';
 import './pages.css';
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -24,11 +24,24 @@ function RateConfiguration() {
   const [endDate, setEndDate] = useState('2027-01-01');
 
   const resolveAndLog = (rates: CloudbedsRateEntry[], name: string, label: string): string => {
+    const uniqueNames = [...new Set(rates.map((r) => r.ratePlanNamePublic))];
+    debug('RateConfig', 'resolution', `Looking up ${label}: "${name}"`, {
+      uniqueRatePlanNames: uniqueNames.slice(0, 15),
+      totalRateRows: rates.length,
+    });
     const id = resolveRatePlanId(rates, name);
     if (id) {
-      info('RateConfig', `Resolved ${name} → ${id}`);
+      const matchedRows = rates.filter((r) => r.ratePlanID === id);
+      info('RateConfig', 'resolution', `Resolved ${name} → ${id}`, {
+        ratePlanNamePublic: name,
+        ratePlanID: id,
+        matchedRoomTypes: matchedRows.map((r) => ({ roomTypeName: r.roomTypeName, roomTypeID: r.roomTypeID, rateID: r.rateID })),
+      });
     } else {
-      warn('RateConfig', `No match found for ${label}: "${name}"`);
+      warn('RateConfig', 'resolution', `No match for ${label}: "${name}"`, {
+        searched: name,
+        availableNames: uniqueNames,
+      });
     }
     return id;
   };
@@ -39,18 +52,19 @@ function RateConfiguration() {
     if (!config) return;
     const cached = loadRatesCache(config.propertyId);
     if (cached && cached.length > 0) {
+      debug('RateConfig', 'cache', `Loaded ${cached.length} rate entries from cache`, {
+        first5: cached.slice(0, 5).map((r) => ({ ratePlanNamePublic: r.ratePlanNamePublic, ratePlanID: r.ratePlanID, roomTypeID: r.roomTypeID, rateID: r.rateID })),
+      });
       setAllRates(cached);
       setOldRatePlanId(resolveRatePlanId(cached, 'FORMERPMS'));
       setFutureRatePlanId(resolveRatePlanId(cached, 'Walkin'));
       setLoadStatus('success');
       setStatusMessage(`Loaded ${cached.length} rate entries from cache.`);
-      info('RateConfig', `Loaded ${cached.length} rate entries from cache`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleGetRates = async () => {
-    // Validate dates
     if (!isValidDate(startDate) || !isValidDate(endDate)) {
       setLoadStatus('error');
       setStatusMessage('Invalid date format. Use YYYY-MM-DD.');
@@ -68,12 +82,32 @@ function RateConfiguration() {
       return;
     }
 
+    // --- State binding stage ---
+    debug('RateConfig', 'state-bind', 'Setting rate state', {
+      parsedCount: result.rates.length,
+      first5: result.rates.slice(0, 5).map((r) => ({ ratePlanNamePublic: r.ratePlanNamePublic, ratePlanID: r.ratePlanID, rateID: r.rateID })),
+    });
+
     setAllRates(result.rates);
-    setOldRatePlanId(resolveAndLog(result.rates, oldRateName, 'Old Reservations'));
-    setFutureRatePlanId(resolveAndLog(result.rates, futureRateName, 'Future Reservations'));
+    const oldId = resolveAndLog(result.rates, oldRateName, 'Old Reservations');
+    const futureId = resolveAndLog(result.rates, futureRateName, 'Future Reservations');
+    setOldRatePlanId(oldId);
+    setFutureRatePlanId(futureId);
     setLoadStatus('success');
     setStatusMessage(result.message);
+
+    debug('RateConfig', 'state-bind', 'State set complete', {
+      rateCount: result.rates.length,
+      oldRatePlanId: oldId,
+      futureRatePlanId: futureId,
+    });
   };
+
+  // --- Render-side logging ---
+  const rateRows = Array.isArray(allRates) ? allRates : [];
+  if (loadStatus === 'success' && rateRows.length === 0) {
+    debug('RateConfig', 'render', 'Table rendering empty', { reason: 'rateRows is empty after success' });
+  }
 
   return (
     <div className="config-page">
@@ -163,7 +197,7 @@ function RateConfiguration() {
         </div>
       )}
 
-      {allRates.length > 0 && (
+      {rateRows.length > 0 && (
         <div className="scrollable-list" style={{ marginTop: 12 }}>
           <table className="compact-table">
             <thead>
@@ -177,7 +211,7 @@ function RateConfiguration() {
               </tr>
             </thead>
             <tbody>
-              {allRates.map((r, i) => (
+              {rateRows.map((r, i) => (
                 <tr key={`${r.ratePlanID}-${r.roomTypeID}-${r.rateID}-${i}`}>
                   <td>{r.ratePlanNamePublic}</td>
                   <td>{r.ratePlanID}</td>
