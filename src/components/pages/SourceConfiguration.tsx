@@ -89,7 +89,13 @@ function SourceConfiguration() {
   };
 
   // --- Render-side logging ---
-  const sourceRows = Array.isArray(allSources) ? allSources : [];
+  let sourceRows: CloudbedsSource[] = [];
+  try {
+    sourceRows = Array.isArray(allSources) ? allSources : [];
+  } catch {
+    sourceRows = [];
+    debug('SourceConfig', 'render', 'sourceRows fallback triggered', { reason: 'Array.isArray threw or allSources invalid' });
+  }
   if (loadStatus === 'success' && sourceRows.length === 0) {
     debug('SourceConfig', 'render', 'Table rendering empty', { reason: 'sourceRows is empty after success' });
   }
@@ -160,6 +166,12 @@ function SourceConfiguration() {
         </div>
       )}
 
+      {loadStatus === 'success' && sourceRows.length === 0 && (
+        <div className="status-area status-area--idle" style={{ marginTop: 12 }}>
+          No sources returned. Check that the property has sources configured in Cloudbeds.
+        </div>
+      )}
+
       {sourceRows.length > 0 && (
         <div className="scrollable-list" style={{ marginTop: 12 }}>
           <table className="compact-table">
@@ -174,12 +186,12 @@ function SourceConfiguration() {
             </thead>
             <tbody>
               {sourceRows.map((s) => (
-                <tr key={s.sourceID}>
-                  <td>{s.sourceName}</td>
-                  <td>{s.sourceID}</td>
+                <tr key={s.sourceID ?? Math.random()}>
+                  <td>{String(s.sourceName ?? '')}</td>
+                  <td>{String(s.sourceID ?? '')}</td>
                   <td>{s.isThirdParty ? 'Yes' : 'No'}</td>
-                  <td>{s.status}</td>
-                  <td>{s.paymentCollect}</td>
+                  <td>{String(s.status ?? '')}</td>
+                  <td>{String(s.paymentCollect ?? '')}</td>
                 </tr>
               ))}
             </tbody>
