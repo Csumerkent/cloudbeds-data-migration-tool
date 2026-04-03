@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   fetchRoomData,
+  loadRoomDataCache,
   type CloudbedsRoomType,
   type CloudbedsRoom,
 } from '../../services/roomConfigurationService';
+import { loadApiConfig } from '../../services/apiConfigurationService';
 import './pages.css';
 
 interface RoomMapping {
@@ -20,10 +22,41 @@ interface RoomTypeEntry {
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
 
+function buildEntries(roomTypes: CloudbedsRoomType[], rooms: CloudbedsRoom[]): RoomTypeEntry[] {
+  const roomsByType = new Map<string, CloudbedsRoom[]>();
+  for (const room of rooms) {
+    const list = roomsByType.get(room.roomTypeID) ?? [];
+    list.push(room);
+    roomsByType.set(room.roomTypeID, list);
+  }
+  return roomTypes.map((rt) => ({
+    roomType: rt,
+    mapping: '',
+    noMapping: false,
+    rooms: (roomsByType.get(rt.roomTypeID) ?? []).map((r) => ({
+      ...r,
+      mapping: '',
+      noMapping: false,
+    })),
+  }));
+}
+
 function RoomConfiguration() {
   const [entries, setEntries] = useState<RoomTypeEntry[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
+
+  // Load cached data on mount — do not auto-fetch
+  useEffect(() => {
+    const config = loadApiConfig();
+    if (!config) return;
+    const cached = loadRoomDataCache(config.propertyId);
+    if (cached) {
+      setEntries(buildEntries(cached.roomTypes, cached.rooms));
+      setLoadStatus('success');
+      setStatusMessage(`Loaded ${cached.roomTypes.length} room types and ${cached.rooms.length} rooms from cache.`);
+    }
+  }, []);
 
   const handleGet = async () => {
     setLoadStatus('loading');
@@ -37,26 +70,7 @@ function RoomConfiguration() {
       return;
     }
 
-    // Group rooms under their room type
-    const roomsByType = new Map<string, CloudbedsRoom[]>();
-    for (const room of result.rooms) {
-      const list = roomsByType.get(room.roomTypeID) ?? [];
-      list.push(room);
-      roomsByType.set(room.roomTypeID, list);
-    }
-
-    const built: RoomTypeEntry[] = result.roomTypes.map((rt) => ({
-      roomType: rt,
-      mapping: '',
-      noMapping: false,
-      rooms: (roomsByType.get(rt.roomTypeID) ?? []).map((r) => ({
-        ...r,
-        mapping: '',
-        noMapping: false,
-      })),
-    }));
-
-    setEntries(built);
+    setEntries(buildEntries(result.roomTypes, result.rooms));
     setLoadStatus('success');
     setStatusMessage(result.message);
   };
@@ -109,14 +123,12 @@ function RoomConfiguration() {
     <div className="config-page">
       <h3>Room Configuration</h3>
 
-      <div className="config-note">
+      <div className="config-note config-note--compact">
         Room configuration is managed in Cloudbeds under{' '}
         <strong>Settings &rarr; Property &rarr; Accommodation</strong>. At minimum,
         room types must be defined and room numbers must be created under each room
-        type before fetching.<br /><br />
-        Fetch room types and rooms from Cloudbeds, then map each to the corresponding
-        entry in your source PMS. Use the &quot;No Mapping&quot; checkbox if a room
-        type or room has no equivalent in the source system.
+        type before fetching. Map each to the corresponding entry in your source PMS.
+        Use &quot;No Mapping&quot; if a room type or room has no equivalent.
       </div>
 
       <button

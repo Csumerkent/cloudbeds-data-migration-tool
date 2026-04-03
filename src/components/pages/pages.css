@@ -216,3 +216,62 @@
   display: flex;
   gap: 8px;
 }
+
+/* Compact variants for Source/Rate config */
+.config-note--compact {
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.config-section--compact {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+}
+
+.config-section--compact h4 {
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+}
+
+.config-row--tight {
+  margin-bottom: 4px;
+  gap: 10px;
+}
+
+/* Scrollable list for sources / rates */
+.scrollable-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.compact-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.compact-table th {
+  position: sticky;
+  top: 0;
+  background: #f5f5f5;
+  text-align: left;
+  padding: 6px 10px;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 1px solid #ddd;
+}
+
+.compact-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  color: #444;
+}
+
+.compact-table tbody tr:hover {
+  background: #f8f9ff;
+}

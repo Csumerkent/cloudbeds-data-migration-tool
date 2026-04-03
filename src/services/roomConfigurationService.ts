@@ -16,11 +16,36 @@ export interface CloudbedsRoom {
   roomTypeNameShort: string;
 }
 
+export interface RoomDataCache {
+  roomTypes: CloudbedsRoomType[];
+  rooms: CloudbedsRoom[];
+}
+
 export interface FetchRoomDataResult {
   success: boolean;
   message: string;
   roomTypes: CloudbedsRoomType[];
   rooms: CloudbedsRoom[];
+}
+
+// --- Persistence (property-scoped) ---
+
+function storageKey(propertyId: string): string {
+  return `cloudbeds-rooms-${propertyId}`;
+}
+
+export function saveRoomDataCache(propertyId: string, data: RoomDataCache): void {
+  localStorage.setItem(storageKey(propertyId), JSON.stringify(data));
+}
+
+export function loadRoomDataCache(propertyId: string): RoomDataCache | null {
+  const raw = localStorage.getItem(storageKey(propertyId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as RoomDataCache;
+  } catch {
+    return null;
+  }
 }
 
 // --- Fetch room types and rooms ---
@@ -92,6 +117,9 @@ export async function fetchRoomData(): Promise<FetchRoomDataResult> {
       roomTypeNameShort: r.roomTypeNameShort,
     })),
   );
+
+  // Persist per property
+  saveRoomDataCache(propertyId, { roomTypes, rooms });
 
   return { success: true, message: `Loaded ${roomTypes.length} room types and ${rooms.length} rooms.`, roomTypes, rooms };
 }
