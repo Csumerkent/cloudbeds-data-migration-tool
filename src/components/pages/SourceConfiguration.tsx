@@ -6,7 +6,7 @@ import {
   type CloudbedsSource,
 } from '../../services/sourceConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
-import { info, warn } from '../../services/debugLogger';
+import { debug, info, warn } from '../../services/debugLogger';
 import './pages.css';
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -21,11 +21,18 @@ function SourceConfiguration() {
   const [statusMessage, setStatusMessage] = useState('');
 
   const resolveAndLog = (sources: CloudbedsSource[], name: string, label: string): string => {
+    debug('SourceConfig', 'resolution', `Looking up ${label}: "${name}"`, {
+      availableNames: sources.slice(0, 10).map((s) => s.sourceName),
+      totalSources: sources.length,
+    });
     const id = resolveSourceId(sources, name);
     if (id) {
-      info('SourceConfig', `Resolved ${name} → ${id}`);
+      info('SourceConfig', 'resolution', `Resolved ${name} → ${id}`, { sourceName: name, sourceID: id });
     } else {
-      warn('SourceConfig', `No match found for ${label}: "${name}"`);
+      warn('SourceConfig', 'resolution', `No match for ${label}: "${name}"`, {
+        searched: name,
+        availableCount: sources.length,
+      });
     }
     return id;
   };
@@ -36,12 +43,14 @@ function SourceConfiguration() {
     if (!config) return;
     const cached = loadSourcesCache(config.propertyId);
     if (cached && cached.length > 0) {
+      debug('SourceConfig', 'cache', `Loaded ${cached.length} sources from cache`, {
+        first3: cached.slice(0, 3).map((s) => ({ sourceID: s.sourceID, sourceName: s.sourceName })),
+      });
       setAllSources(cached);
       setOldSourceId(resolveSourceId(cached, 'FORMERPMS'));
       setFutureSourceId(resolveSourceId(cached, 'Direct - Hotel'));
       setLoadStatus('success');
       setStatusMessage(`Loaded ${cached.length} sources from cache.`);
-      info('SourceConfig', `Loaded ${cached.length} sources from cache`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -58,12 +67,32 @@ function SourceConfiguration() {
       return;
     }
 
+    // --- State binding stage ---
+    debug('SourceConfig', 'state-bind', 'Setting source state', {
+      parsedCount: result.sources.length,
+      first3: result.sources.slice(0, 3).map((s) => ({ sourceID: s.sourceID, sourceName: s.sourceName })),
+    });
+
     setAllSources(result.sources);
-    setOldSourceId(resolveAndLog(result.sources, oldSourceName, 'Old Reservations'));
-    setFutureSourceId(resolveAndLog(result.sources, futureSourceName, 'Future Reservations'));
+    const oldId = resolveAndLog(result.sources, oldSourceName, 'Old Reservations');
+    const futureId = resolveAndLog(result.sources, futureSourceName, 'Future Reservations');
+    setOldSourceId(oldId);
+    setFutureSourceId(futureId);
     setLoadStatus('success');
     setStatusMessage(result.message);
+
+    debug('SourceConfig', 'state-bind', 'State set complete', {
+      sourceCount: result.sources.length,
+      oldSourceId: oldId,
+      futureSourceId: futureId,
+    });
   };
+
+  // --- Render-side logging ---
+  const sourceRows = Array.isArray(allSources) ? allSources : [];
+  if (loadStatus === 'success' && sourceRows.length === 0) {
+    debug('SourceConfig', 'render', 'Table rendering empty', { reason: 'sourceRows is empty after success' });
+  }
 
   return (
     <div className="config-page">
@@ -131,7 +160,7 @@ function SourceConfiguration() {
         </div>
       )}
 
-      {allSources.length > 0 && (
+      {sourceRows.length > 0 && (
         <div className="scrollable-list" style={{ marginTop: 12 }}>
           <table className="compact-table">
             <thead>
@@ -144,7 +173,7 @@ function SourceConfiguration() {
               </tr>
             </thead>
             <tbody>
-              {allSources.map((s) => (
+              {sourceRows.map((s) => (
                 <tr key={s.sourceID}>
                   <td>{s.sourceName}</td>
                   <td>{s.sourceID}</td>

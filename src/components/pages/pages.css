@@ -275,3 +275,69 @@
 .compact-table tbody tr:hover {
   background: #f8f9ff;
 }
+
+/* Debug Tool */
+.debug-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.debug-select {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  background: #fff;
+}
+
+.debug-search {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  width: 180px;
+}
+
+.debug-count {
+  font-size: 0.78rem;
+  color: #888;
+  margin-left: auto;
+}
+
+.debug-payload {
+  display: block;
+  margin-top: 6px;
+  padding: 8px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.debug-payload-hint {
+  color: #999;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.debug-copy-btn {
+  padding: 2px 6px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #f5f5f5;
+  font-size: 0.68rem;
+  cursor: pointer;
+  color: #666;
+}
+
+.debug-copy-btn:hover {
+  background: #e0e0e0;
+}
