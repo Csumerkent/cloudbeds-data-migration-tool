@@ -6,6 +6,7 @@ export const NAV_ITEMS = [
   'Simulation',
   'Execution',
   'Reporting',
+  'Debug Tool',
 ] as const;
 
 export type NavItem = (typeof NAV_ITEMS)[number];

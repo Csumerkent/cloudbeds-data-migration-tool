@@ -1,5 +1,6 @@
 import type { NavItem } from './Sidebar';
 import ProjectSetup from './ProjectSetup';
+import DebugTool from './pages/DebugTool';
 
 interface PageContentProps {
   page: NavItem;
@@ -8,6 +9,10 @@ interface PageContentProps {
 function PageContent({ page }: PageContentProps) {
   if (page === 'Project Setup') {
     return <ProjectSetup />;
+  }
+
+  if (page === 'Debug Tool') {
+    return <DebugTool />;
   }
 
   return (
