@@ -16,7 +16,7 @@ function DebugTool() {
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'ALL'>('ALL');
   const [moduleFilter, setModuleFilter] = useState('ALL');
   const [search, setSearch] = useState('');
-  const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
   const modules = useMemo(() => {
     const m = getModules();
@@ -53,7 +53,7 @@ function DebugTool() {
   const handleClear = () => {
     clearLogs();
     setLogs([]);
-    setExpandedRow(null);
+    setExpandedRows(new Set());
   };
 
   const copyRow = (entry: LogEntry) => {
@@ -62,7 +62,29 @@ function DebugTool() {
   };
 
   const toggleRow = (index: number) => {
-    setExpandedRow(expandedRow === index ? null : index);
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  };
+
+  const expandAll = () => {
+    const indices = new Set<number>();
+    filtered.forEach((entry) => {
+      if (entry.payload !== undefined) {
+        indices.add(logs.indexOf(entry));
+      }
+    });
+    setExpandedRows(indices);
+  };
+
+  const collapseAll = () => {
+    setExpandedRows(new Set());
   };
 
   return (
@@ -77,6 +99,8 @@ function DebugTool() {
       <div className="debug-controls">
         <button className="btn btn-primary" onClick={handleRefresh}>Refresh</button>
         <button className="btn btn-secondary" onClick={handleClear}>Clear</button>
+        <button className="btn btn-secondary" onClick={expandAll}>Expand All</button>
+        <button className="btn btn-secondary" onClick={collapseAll}>Collapse All</button>
 
         <select
           className="debug-select"
@@ -124,9 +148,9 @@ function DebugTool() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((entry, i) => {
+              {filtered.map((entry) => {
                 const globalIdx = logs.indexOf(entry);
-                const isExpanded = expandedRow === globalIdx;
+                const isExpanded = expandedRows.has(globalIdx);
                 const hasPayload = entry.payload !== undefined;
                 return (
                   <tr key={globalIdx} onClick={() => hasPayload && toggleRow(globalIdx)} style={{ cursor: hasPayload ? 'pointer' : 'default' }}>

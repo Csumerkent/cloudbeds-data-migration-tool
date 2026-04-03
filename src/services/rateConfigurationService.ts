@@ -114,46 +114,39 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
   }
 
   // --- Parse stage ---
-  const rawPlans = Array.isArray(body.data) ? body.data : [];
-  info('RateConfig', 'parse', 'Rate parse started', { rawPlanCount: rawPlans.length });
+  // API returns a FLAT array — each row already contains all fields directly
+  const rawRows = Array.isArray(body.data) ? body.data : [];
+  info('RateConfig', 'parse', 'Rate parse started', { rawRowCount: rawRows.length });
 
-  debug('RateConfig', 'parse', 'First 5 raw plans', {
-    plans: rawPlans.slice(0, 5).map((p: Record<string, unknown>) => ({
-      ratePlanNamePublic: p?.ratePlanNamePublic,
-      ratePlanID: p?.ratePlanID,
-      isDerived: p?.isDerived,
-      roomTypesCount: Array.isArray(p?.roomTypes) ? p.roomTypes.length : 0,
-      keys: p ? Object.keys(p).slice(0, 10) : [],
+  debug('RateConfig', 'parse', 'First 5 raw rows', {
+    rows: rawRows.slice(0, 5).map((r: Record<string, unknown>) => ({
+      ratePlanNamePublic: r?.ratePlanNamePublic,
+      ratePlanID: r?.ratePlanID,
+      roomTypeID: r?.roomTypeID,
+      roomTypeName: r?.roomTypeName,
+      rateID: r?.rateID,
+      isDerived: r?.isDerived,
+      keys: r ? Object.keys(r).slice(0, 12) : [],
     })),
   });
 
-  // Flatten: plan → roomTypes → rates
-  const allRows: CloudbedsRateEntry[] = [];
-  for (const plan of rawPlans) {
-    if (!plan || typeof plan !== 'object') continue;
-    const p = plan as Record<string, unknown>;
-    const roomTypes = Array.isArray(p.roomTypes) ? p.roomTypes : [];
-    for (const rt of roomTypes) {
-      if (!rt || typeof rt !== 'object') continue;
-      const r = rt as Record<string, unknown>;
-      const ratesList = Array.isArray(r.rates) ? r.rates : [];
-      for (const rate of ratesList) {
-        if (!rate || typeof rate !== 'object') continue;
-        const ra = rate as Record<string, unknown>;
-        allRows.push({
-          ratePlanNamePublic: String(p.ratePlanNamePublic ?? ''),
-          ratePlanNamePrivate: String(p.ratePlanNamePrivate ?? ''),
-          ratePlanID: String(p.ratePlanID ?? ''),
-          roomTypeID: String(r.roomTypeID ?? ''),
-          roomTypeName: String(r.roomTypeName ?? ''),
-          rateID: String(ra.rateID ?? ''),
-          isDerived: Boolean(p.isDerived),
-          roomRate: String(ra.roomRate ?? ''),
-          totalRate: String(ra.totalRate ?? ''),
-        });
-      }
-    }
-  }
+  // Map flat rows directly to typed entries
+  const allRows: CloudbedsRateEntry[] = rawRows
+    .filter((r: unknown) => r != null && typeof r === 'object')
+    .map((item: unknown) => {
+      const r = item as Record<string, unknown>;
+      return {
+      ratePlanNamePublic: String(r.ratePlanNamePublic ?? ''),
+      ratePlanNamePrivate: String(r.ratePlanNamePrivate ?? ''),
+      ratePlanID: String(r.ratePlanID ?? ''),
+      roomTypeID: String(r.roomTypeID ?? ''),
+      roomTypeName: String(r.roomTypeName ?? ''),
+      rateID: String(r.rateID ?? ''),
+      isDerived: Boolean(r.isDerived),
+      roomRate: String(r.roomRate ?? ''),
+      totalRate: String(r.totalRate ?? ''),
+    };
+    });
 
   // --- Filtering stage ---
   const withPublicName = allRows.filter((r) => r.ratePlanNamePublic.trim() !== '');
@@ -162,7 +155,8 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
   const validRates = withRoomTypeId.filter((r) => r.rateID.trim() !== '');
 
   debug('RateConfig', 'filter', 'Filter step counts', {
-    totalFlattened: allRows.length,
+    rawRows: rawRows.length,
+    mapped: allRows.length,
     withRatePlanNamePublic: withPublicName.length,
     withRatePlanID: withPlanId.length,
     withRoomTypeID: withRoomTypeId.length,
@@ -181,7 +175,8 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
 
   if (allRows.length > 0 && validRates.length === 0) {
     warn('RateConfig', 'filter', 'All rows filtered out', {
-      totalFlattened: allRows.length,
+      rawRows: rawRows.length,
+      mapped: allRows.length,
       sampleDropped: allRows.slice(0, 3).map((r) => ({
         ratePlanNamePublic: r.ratePlanNamePublic || '(empty)',
         ratePlanID: r.ratePlanID || '(empty)',
@@ -195,8 +190,8 @@ export async function fetchRates(startDate: string, endDate: string): Promise<Fe
   saveRatesCache(propertyId, validRates);
   info('RateConfig', 'persist', `Saved ${validRates.length} rate entries to cache for property ${propertyId}`);
 
-  info('RateConfig', 'complete', `Fetch success — ${validRates.length} valid rate entries from ${rawPlans.length} rate plans`);
-  return { success: true, message: `Fetched ${validRates.length} rate entries across ${rawPlans.length} rate plans.`, rates: validRates };
+  info('RateConfig', 'complete', `Fetch success — ${validRates.length} valid rate entries from ${rawRows.length} raw rows`);
+  return { success: true, message: `Fetched ${validRates.length} rate entries from ${rawRows.length} raw rows.`, rates: validRates };
 }
 
 // --- Resolve rate plan ID by public name (case-insensitive exact match, first match) ---
