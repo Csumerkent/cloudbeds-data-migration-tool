@@ -3,9 +3,11 @@ import {
   fetchRates,
   resolveRatePlanId,
   loadRatesCache,
+  isValidDate,
   type CloudbedsRateEntry,
 } from '../../services/rateConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
+import { info, warn } from '../../services/debugLogger';
 import './pages.css';
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -18,27 +20,47 @@ function RateConfiguration() {
   const [allRates, setAllRates] = useState<CloudbedsRateEntry[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
+  const [startDate, setStartDate] = useState('2021-01-01');
+  const [endDate, setEndDate] = useState('2027-01-01');
+
+  const resolveAndLog = (rates: CloudbedsRateEntry[], name: string, label: string): string => {
+    const id = resolveRatePlanId(rates, name);
+    if (id) {
+      info('RateConfig', `Resolved ${name} → ${id}`);
+    } else {
+      warn('RateConfig', `No match found for ${label}: "${name}"`);
+    }
+    return id;
+  };
 
   // Load cached rates on mount
   useEffect(() => {
     const config = loadApiConfig();
     if (!config) return;
     const cached = loadRatesCache(config.propertyId);
-    if (cached) {
+    if (cached && cached.length > 0) {
       setAllRates(cached);
-      setOldRatePlanId(resolveRatePlanId(cached, oldRateName));
-      setFutureRatePlanId(resolveRatePlanId(cached, futureRateName));
+      setOldRatePlanId(resolveRatePlanId(cached, 'FORMERPMS'));
+      setFutureRatePlanId(resolveRatePlanId(cached, 'Walkin'));
       setLoadStatus('success');
       setStatusMessage(`Loaded ${cached.length} rate entries from cache.`);
+      info('RateConfig', `Loaded ${cached.length} rate entries from cache`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleGetRates = async () => {
+    // Validate dates
+    if (!isValidDate(startDate) || !isValidDate(endDate)) {
+      setLoadStatus('error');
+      setStatusMessage('Invalid date format. Use YYYY-MM-DD.');
+      return;
+    }
+
     setLoadStatus('loading');
     setStatusMessage('Fetching rates...');
 
-    const result = await fetchRates();
+    const result = await fetchRates(startDate, endDate);
 
     if (!result.success) {
       setLoadStatus('error');
@@ -47,8 +69,8 @@ function RateConfiguration() {
     }
 
     setAllRates(result.rates);
-    setOldRatePlanId(resolveRatePlanId(result.rates, oldRateName));
-    setFutureRatePlanId(resolveRatePlanId(result.rates, futureRateName));
+    setOldRatePlanId(resolveAndLog(result.rates, oldRateName, 'Old Reservations'));
+    setFutureRatePlanId(resolveAndLog(result.rates, futureRateName, 'Future Reservations'));
     setLoadStatus('success');
     setStatusMessage(result.message);
   };
@@ -79,12 +101,7 @@ function RateConfiguration() {
           </div>
           <div className="config-field">
             <label>Rate Plan ID</label>
-            <input
-              type="text"
-              readOnly
-              value={oldRatePlanId}
-              placeholder="—"
-            />
+            <input type="text" readOnly value={oldRatePlanId} placeholder="—" />
           </div>
         </div>
       </div>
@@ -102,13 +119,29 @@ function RateConfiguration() {
           </div>
           <div className="config-field">
             <label>Rate Plan ID</label>
-            <input
-              type="text"
-              readOnly
-              value={futureRatePlanId}
-              placeholder="—"
-            />
+            <input type="text" readOnly value={futureRatePlanId} placeholder="—" />
           </div>
+        </div>
+      </div>
+
+      <div className="config-row config-row--tight" style={{ marginTop: 8 }}>
+        <div className="config-field">
+          <label>Start Date</label>
+          <input
+            type="text"
+            value={startDate}
+            placeholder="YYYY-MM-DD"
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+        </div>
+        <div className="config-field">
+          <label>End Date</label>
+          <input
+            type="text"
+            value={endDate}
+            placeholder="YYYY-MM-DD"
+            onChange={(e) => setEndDate(e.target.value)}
+          />
         </div>
       </div>
 
@@ -116,6 +149,7 @@ function RateConfiguration() {
         className="btn btn-primary"
         onClick={handleGetRates}
         disabled={loadStatus === 'loading'}
+        style={{ marginTop: 8 }}
       >
         {loadStatus === 'loading' ? 'Fetching...' : 'Get Rates'}
       </button>
@@ -139,6 +173,7 @@ function RateConfiguration() {
                 <th>Room Type Name</th>
                 <th>Room Type ID</th>
                 <th>Rate ID</th>
+                <th>Derived</th>
               </tr>
             </thead>
             <tbody>
@@ -149,6 +184,7 @@ function RateConfiguration() {
                   <td>{r.roomTypeName}</td>
                   <td>{r.roomTypeID}</td>
                   <td>{r.rateID}</td>
+                  <td>{r.isDerived ? 'Yes' : 'No'}</td>
                 </tr>
               ))}
             </tbody>

@@ -6,6 +6,7 @@ import {
   type CloudbedsSource,
 } from '../../services/sourceConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
+import { info, warn } from '../../services/debugLogger';
 import './pages.css';
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -19,19 +20,29 @@ function SourceConfiguration() {
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
 
+  const resolveAndLog = (sources: CloudbedsSource[], name: string, label: string): string => {
+    const id = resolveSourceId(sources, name);
+    if (id) {
+      info('SourceConfig', `Resolved ${name} → ${id}`);
+    } else {
+      warn('SourceConfig', `No match found for ${label}: "${name}"`);
+    }
+    return id;
+  };
+
   // Load cached sources on mount
   useEffect(() => {
     const config = loadApiConfig();
     if (!config) return;
     const cached = loadSourcesCache(config.propertyId);
-    if (cached) {
+    if (cached && cached.length > 0) {
       setAllSources(cached);
-      setOldSourceId(resolveSourceId(cached, oldSourceName));
-      setFutureSourceId(resolveSourceId(cached, futureSourceName));
+      setOldSourceId(resolveSourceId(cached, 'FORMERPMS'));
+      setFutureSourceId(resolveSourceId(cached, 'Direct - Hotel'));
       setLoadStatus('success');
       setStatusMessage(`Loaded ${cached.length} sources from cache.`);
+      info('SourceConfig', `Loaded ${cached.length} sources from cache`);
     }
-  // Only run on mount
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -48,8 +59,8 @@ function SourceConfiguration() {
     }
 
     setAllSources(result.sources);
-    setOldSourceId(resolveSourceId(result.sources, oldSourceName));
-    setFutureSourceId(resolveSourceId(result.sources, futureSourceName));
+    setOldSourceId(resolveAndLog(result.sources, oldSourceName, 'Old Reservations'));
+    setFutureSourceId(resolveAndLog(result.sources, futureSourceName, 'Future Reservations'));
     setLoadStatus('success');
     setStatusMessage(result.message);
   };
@@ -80,12 +91,7 @@ function SourceConfiguration() {
           </div>
           <div className="config-field">
             <label>Source ID</label>
-            <input
-              type="text"
-              readOnly
-              value={oldSourceId}
-              placeholder="—"
-            />
+            <input type="text" readOnly value={oldSourceId} placeholder="—" />
           </div>
         </div>
       </div>
@@ -103,12 +109,7 @@ function SourceConfiguration() {
           </div>
           <div className="config-field">
             <label>Source ID</label>
-            <input
-              type="text"
-              readOnly
-              value={futureSourceId}
-              placeholder="—"
-            />
+            <input type="text" readOnly value={futureSourceId} placeholder="—" />
           </div>
         </div>
       </div>
@@ -137,6 +138,9 @@ function SourceConfiguration() {
               <tr>
                 <th>Source Name</th>
                 <th>Source ID</th>
+                <th>Third Party</th>
+                <th>Status</th>
+                <th>Payment Collect</th>
               </tr>
             </thead>
             <tbody>
@@ -144,6 +148,9 @@ function SourceConfiguration() {
                 <tr key={s.sourceID}>
                   <td>{s.sourceName}</td>
                   <td>{s.sourceID}</td>
+                  <td>{s.isThirdParty ? 'Yes' : 'No'}</td>
+                  <td>{s.status}</td>
+                  <td>{s.paymentCollect}</td>
                 </tr>
               ))}
             </tbody>
