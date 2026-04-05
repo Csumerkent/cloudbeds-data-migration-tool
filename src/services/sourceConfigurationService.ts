@@ -52,6 +52,7 @@ export async function fetchSources(): Promise<FetchSourcesResult> {
   const url = `${base}/getSources?propertyIDs=${encodeURIComponent(propertyId)}`;
 
   // --- Request stage ---
+  debug('SourceConfig', 'request', 'Request details', { url, propertyId });
   info('SourceConfig', 'request', 'Fetch started', { url, propertyId });
 
   let result;
@@ -59,7 +60,12 @@ export async function fetchSources(): Promise<FetchSourcesResult> {
     result = await window.electronAPI.apiGet({ url, apiKey });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    logError('SourceConfig', 'request', 'Fetch threw exception', { error: msg, stack: err instanceof Error ? err.stack : undefined });
+    logError('SourceConfig', 'error', 'Fetch threw exception', {
+      'error.message': msg,
+      'error.stack': err instanceof Error ? err.stack : undefined,
+      url,
+      propertyId,
+    });
     return { success: false, message: `Fetch failed: ${msg}`, sources: [] };
   }
 
@@ -81,12 +87,15 @@ export async function fetchSources(): Promise<FetchSourcesResult> {
   }
 
   const body = result.data as { success?: boolean; data?: unknown };
+  const responseData = body.data;
+  const nestedSourceRows = Array.isArray(responseData) ? responseData[0] : undefined;
 
   debug('SourceConfig', 'response', 'Body inspection', {
-    'body.success': body.success,
-    'typeof body.data': typeof body.data,
-    'Array.isArray(body.data)': Array.isArray(body.data),
-    'body.data length': Array.isArray(body.data) ? body.data.length : 'N/A',
+    'response.success': body.success,
+    'Array.isArray(response.data)': Array.isArray(responseData),
+    'Array.isArray(response.data?.[0])': Array.isArray(nestedSourceRows),
+    'response.data length': Array.isArray(responseData) ? responseData.length : 'N/A',
+    'response.data[0] length': Array.isArray(nestedSourceRows) ? nestedSourceRows.length : 'N/A',
   });
 
   if (!body.success) {
@@ -97,57 +106,22 @@ export async function fetchSources(): Promise<FetchSourcesResult> {
   // --- Parse stage ---
   info('SourceConfig', 'parse', 'Source parse started');
 
-  // getSources response: data[0] contains the actual source list
-  let rawSources: Array<Record<string, unknown>> = [];
-  let parseStrategy = 'unknown';
+  const rawSources = Array.isArray(nestedSourceRows)
+    ? (nestedSourceRows as Array<Record<string, unknown>>)
+    : [];
 
-  if (Array.isArray(body.data)) {
-    const first = body.data[0];
-
-    debug('SourceConfig', 'parse', 'Inspecting data[0]', {
-      'typeof data[0]': typeof first,
-      'Array.isArray(data[0])': Array.isArray(first),
-      'data[0] length': Array.isArray(first) ? first.length : 'N/A',
-      'data[0] sample keys': first && typeof first === 'object' && !Array.isArray(first) ? Object.keys(first as Record<string, unknown>).slice(0, 8) : 'N/A',
-    });
-
-    if (Array.isArray(first)) {
-      // data[0] is the source array
-      rawSources = first;
-      parseStrategy = 'data[0] is array';
-    } else if (first && typeof first === 'object' && !Array.isArray(first)) {
-      const firstObj = first as Record<string, unknown>;
-      if ('sourceID' in firstObj && 'sourceName' in firstObj) {
-        // data itself is a flat array of source objects
-        rawSources = body.data as Array<Record<string, unknown>>;
-        parseStrategy = 'data is flat source array';
-      } else {
-        // data[0] might be an object whose values are source objects
-        // Try extracting values
-        const vals = Object.values(firstObj);
-        if (vals.length > 0 && typeof vals[0] === 'object' && vals[0] !== null) {
-          const sample = vals[0] as Record<string, unknown>;
-          if ('sourceID' in sample && 'sourceName' in sample) {
-            rawSources = vals as Array<Record<string, unknown>>;
-            parseStrategy = 'data[0] is object-map of sources';
-          }
-        }
-      }
-    }
-  }
-
-  debug('SourceConfig', 'parse', `Strategy: ${parseStrategy}`, {
-    rawSourceCount: rawSources.length,
-    firstRowKeys: rawSources.length > 0 ? Object.keys(rawSources[0]).slice(0, 10) : [],
-    first3Rows: rawSources.slice(0, 3).map((r) => ({ sourceID: r.sourceID, sourceName: r.sourceName })),
+  debug('SourceConfig', 'parse', 'Parsed source rows from response.data[0]', {
+    'parsed source count': rawSources.length,
+    'first 5 parsed rows': rawSources.slice(0, 5),
+    'keys of first 3 rows': rawSources.slice(0, 3).map((row) => Object.keys(row)),
   });
 
   if (!Array.isArray(rawSources) || rawSources.length === 0) {
-    logError('SourceConfig', 'parse', 'No sources extracted', {
-      parseStrategy,
-      dataType: typeof body.data,
-      dataIsArray: Array.isArray(body.data),
-      dataLength: Array.isArray(body.data) ? body.data.length : 0,
+    logError('SourceConfig', 'parse', 'No sources extracted from response.data[0]', {
+      'Array.isArray(response.data)': Array.isArray(responseData),
+      'Array.isArray(response.data?.[0])': Array.isArray(nestedSourceRows),
+      'response.data length': Array.isArray(responseData) ? responseData.length : 'N/A',
+      'response.data[0] sample': nestedSourceRows,
     });
     return { success: false, message: 'No sources found in API response.', sources: [] };
   }
@@ -194,6 +168,6 @@ export async function fetchSources(): Promise<FetchSourcesResult> {
 export function resolveSourceId(sources: CloudbedsSource[], name: string): string {
   if (!Array.isArray(sources)) return '';
   const lower = name.trim().toLowerCase();
-  const match = sources.find((s) => s.sourceName.trim().toLowerCase() === lower);
+  const match = sources.find((s) => typeof s?.sourceName === 'string' && s.sourceName.trim().toLowerCase() === lower);
   return match ? match.sourceID : '';
 }
