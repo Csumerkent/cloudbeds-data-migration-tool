@@ -6,7 +6,7 @@ import {
   type CloudbedsSource,
 } from '../../services/sourceConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
-import { debug, info, warn } from '../../services/debugLogger';
+import { debug, info, warn, error as logError } from '../../services/debugLogger';
 import './pages.css';
 
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -20,18 +20,39 @@ function SourceConfiguration() {
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
 
-  const resolveAndLog = (sources: CloudbedsSource[], name: string, label: string): string => {
-    debug('SourceConfig', 'resolution', `Looking up ${label}: "${name}"`, {
-      availableNames: sources.slice(0, 10).map((s) => s.sourceName),
-      totalSources: sources.length,
+  const getSafeSourceRows = (value: unknown, stage: string): CloudbedsSource[] => {
+    if (Array.isArray(value)) {
+      return value as CloudbedsSource[];
+    }
+
+    logError('SourceConfig', 'render', 'Source rows are not an array', {
+      stage,
+      valueType: typeof value,
+      fallbackUsed: true,
+      payloadSample: value,
     });
-    const id = resolveSourceId(sources, name);
+    return [];
+  };
+
+  const resolveAndLog = (sources: CloudbedsSource[], name: string, label: string): string => {
+    const safeSources = getSafeSourceRows(sources, `resolution:${label}`);
+    debug('SourceConfig', 'resolution', `Looking up ${label}: "${name}"`, {
+      lookupTarget: name,
+      availableSourceNamesSample: safeSources.slice(0, 10).map((s) => s.sourceName),
+      totalSources: safeSources.length,
+    });
+    const id = resolveSourceId(safeSources, name);
+    const matchedRow = safeSources.find((source) => source.sourceID === id);
     if (id) {
-      info('SourceConfig', 'resolution', `Resolved ${name} → ${id}`, { sourceName: name, sourceID: id });
+      info('SourceConfig', 'resolution', `Resolved ${name} → ${id}`, {
+        sourceName: name,
+        sourceID: id,
+        matchedSourceRow: matchedRow,
+      });
     } else {
       warn('SourceConfig', 'resolution', `No match for ${label}: "${name}"`, {
         searched: name,
-        availableCount: sources.length,
+        availableCount: safeSources.length,
       });
     }
     return id;
@@ -46,14 +67,23 @@ function SourceConfiguration() {
       debug('SourceConfig', 'cache', `Loaded ${cached.length} sources from cache`, {
         first3: cached.slice(0, 3).map((s) => ({ sourceID: s.sourceID, sourceName: s.sourceName })),
       });
-      setAllSources(cached);
-      setOldSourceId(resolveSourceId(cached, 'FORMERPMS'));
-      setFutureSourceId(resolveSourceId(cached, 'Direct - Hotel'));
+      const cachedRows = getSafeSourceRows(cached, 'cache-load');
+      setAllSources(cachedRows);
+      setOldSourceId(resolveAndLog(cachedRows, 'FORMERPMS', 'Old Reservations'));
+      setFutureSourceId(resolveAndLog(cachedRows, 'Direct - Hotel', 'Future Reservations'));
       setLoadStatus('success');
-      setStatusMessage(`Loaded ${cached.length} sources from cache.`);
+      setStatusMessage(`Loaded ${cachedRows.length} sources from cache.`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const safeRows = Array.isArray(allSources) ? allSources : [];
+    debug('SourceConfig', 'state-render', 'Source state updated', {
+      sourceStateCount: safeRows.length,
+      renderGuardFallbackUsed: !Array.isArray(allSources),
+    });
+  }, [allSources]);
 
   const handleGetSources = async () => {
     setLoadStatus('loading');
@@ -67,36 +97,49 @@ function SourceConfiguration() {
       return;
     }
 
+    const parsedRows = getSafeSourceRows(result.sources, 'fetch-success');
+
     // --- State binding stage ---
     debug('SourceConfig', 'state-bind', 'Setting source state', {
-      parsedCount: result.sources.length,
-      first3: result.sources.slice(0, 3).map((s) => ({ sourceID: s.sourceID, sourceName: s.sourceName })),
+      parsedRowCount: parsedRows.length,
+      first3: parsedRows.slice(0, 3).map((s) => ({ sourceID: s.sourceID, sourceName: s.sourceName })),
     });
 
-    setAllSources(result.sources);
-    const oldId = resolveAndLog(result.sources, oldSourceName, 'Old Reservations');
-    const futureId = resolveAndLog(result.sources, futureSourceName, 'Future Reservations');
+    setAllSources(parsedRows);
+    const oldId = resolveAndLog(parsedRows, 'FORMERPMS', 'Old Reservations');
+    const futureId = resolveAndLog(parsedRows, 'Direct - Hotel', 'Future Reservations');
+    setOldSourceName('FORMERPMS');
+    setFutureSourceName('Direct - Hotel');
     setOldSourceId(oldId);
     setFutureSourceId(futureId);
     setLoadStatus('success');
     setStatusMessage(result.message);
 
     debug('SourceConfig', 'state-bind', 'State set complete', {
-      sourceCount: result.sources.length,
+      parsedRowCount: parsedRows.length,
+      sourceStateCount: parsedRows.length,
       oldSourceId: oldId,
       futureSourceId: futureId,
     });
   };
 
   // --- Render-side logging ---
-  let sourceRows: CloudbedsSource[] = [];
-  try {
-    sourceRows = Array.isArray(allSources) ? allSources : [];
-  } catch {
-    sourceRows = [];
-    debug('SourceConfig', 'render', 'sourceRows fallback triggered', { reason: 'Array.isArray threw or allSources invalid' });
-  }
-  if (loadStatus === 'success' && sourceRows.length === 0) {
+  const renderRows = Array.isArray(allSources) ? allSources : null;
+  const renderGuardFallbackUsed = renderRows === null;
+  const sourceRows = renderRows ?? [];
+
+  debug('SourceConfig', 'render', 'Render inspection', {
+    sourceStateCount: Array.isArray(allSources) ? allSources.length : 'invalid',
+    renderedRowCount: sourceRows.length,
+    renderGuardFallbackUsed,
+  });
+
+  if (renderGuardFallbackUsed) {
+    logError('SourceConfig', 'render', 'Render guard fallback used', {
+      sourceStateType: typeof allSources,
+      payloadSample: allSources,
+    });
+  } else if (loadStatus === 'success' && sourceRows.length === 0) {
     debug('SourceConfig', 'render', 'Table rendering empty', { reason: 'sourceRows is empty after success' });
   }
 
@@ -172,6 +215,12 @@ function SourceConfiguration() {
         </div>
       )}
 
+      {renderGuardFallbackUsed && (
+        <div className="status-area status-area--error" style={{ marginTop: 12 }}>
+          Source table could not be rendered safely. Check the Debug Tool for SourceConfig error details.
+        </div>
+      )}
+
       {sourceRows.length > 0 && (
         <div className="scrollable-list" style={{ marginTop: 12 }}>
           <table className="compact-table">
@@ -185,7 +234,7 @@ function SourceConfiguration() {
               </tr>
             </thead>
             <tbody>
-              {sourceRows.map((s) => (
+              {Array.isArray(sourceRows) ? sourceRows.map((s) => (
                 <tr key={s.sourceID ?? Math.random()}>
                   <td>{String(s.sourceName ?? '')}</td>
                   <td>{String(s.sourceID ?? '')}</td>
@@ -193,7 +242,7 @@ function SourceConfiguration() {
                   <td>{String(s.status ?? '')}</td>
                   <td>{String(s.paymentCollect ?? '')}</td>
                 </tr>
-              ))}
+              )) : null}
             </tbody>
           </table>
         </div>
