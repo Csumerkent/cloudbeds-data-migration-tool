@@ -277,6 +277,35 @@
 }
 
 /* Debug Tool */
+.debug-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.debug-tab {
+  padding: 8px 18px;
+  border: none;
+  background: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #666;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.debug-tab:hover {
+  color: #333;
+}
+
+.debug-tab--active {
+  color: #1a73e8;
+  border-bottom-color: #1a73e8;
+}
+
 .debug-controls {
   display: flex;
   align-items: center;

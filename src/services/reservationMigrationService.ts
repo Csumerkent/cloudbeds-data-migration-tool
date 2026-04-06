@@ -78,11 +78,19 @@ function buildPayload(
   const country = get('Country *');
 
   if (!arrival || !departure || !firstName || !lastName || !roomTypeCode || !country) {
+    debug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
+      arrival: arrival || '(empty)', departure: departure || '(empty)',
+      firstName: firstName || '(empty)', lastName: lastName || '(empty)',
+      roomTypeCode: roomTypeCode || '(empty)', country: country || '(empty)',
+    });
     return { payload: null, error: 'Missing required fields' };
   }
 
   // Resolve room type
   const roomTypeID = resolveRoomTypeId(roomTypes, roomTypeCode);
+  debug('Migration', 'resolve', `Row ${rowIndex}: room type "${roomTypeCode}" → ${roomTypeID || '(not found)'}`, {
+    roomTypeCode, roomTypeID, availableTypes: roomTypes.map((r) => r.roomTypeNameShort).slice(0, 10),
+  });
   if (!roomTypeID) {
     return { payload: null, error: `Room type "${roomTypeCode}" not found in Cloudbeds` };
   }
@@ -95,6 +103,11 @@ function buildPayload(
   const paymentMethod = get('Payment Method *') || 'cash';
   const emailConfirmation = get('Email Confirmation') || 'false';
 
+  // Build rooms/adults/children as JSON arrays (API requires array format)
+  const roomsArray = JSON.stringify([{ quantity: Number(roomCount) || 1, roomTypeID }]);
+  const adultsArray = JSON.stringify([{ quantity: Number(adult) || 1, roomTypeID }]);
+  const childrenArray = JSON.stringify([{ quantity: Number(child) || 0, roomTypeID }]);
+
   // Build base payload
   const payload: Record<string, string> = {
     propertyID: propertyId,
@@ -104,10 +117,9 @@ function buildPayload(
     guestLastName: lastName,
     guestEmail: email,
     guestCountry: country.toUpperCase(),
-    roomTypeID,
-    adults: adult,
-    children: child,
-    rooms: roomCount,
+    rooms: roomsArray,
+    adults: adultsArray,
+    children: childrenArray,
     paymentMethod,
     sendEmailConfirmation: emailConfirmation === 'true' ? '1' : '0',
   };
@@ -116,10 +128,13 @@ function buildPayload(
   const sourceCode = get('Source Code');
   if (sourceCode) {
     const sourceID = resolveSourceId(sources, sourceCode);
+    debug('Migration', 'resolve', `Row ${rowIndex}: source "${sourceCode}" → ${sourceID || '(not found)'}`, {
+      sourceCode, sourceID, availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+    });
     if (sourceID) {
       payload.sourceID = sourceID;
     } else {
-      warn('Migration', 'payload', `Source "${sourceCode}" not resolved — omitting`, { rowIndex });
+      warn('Migration', 'resolve', `Row ${rowIndex}: source "${sourceCode}" not resolved — omitting`, { rowIndex, sourceCode });
     }
   }
 
@@ -143,7 +158,7 @@ function buildPayload(
 
   // Optional: requirements / special requests
   const requirements = get('Requirements');
-  if (requirements) payload.estimatedArrivalTime = requirements;
+  if (requirements) payload.guestSpecialRequests = requirements;
 
   // Optional: ETA
   const eta = get('ETA');
@@ -173,6 +188,17 @@ function buildPayload(
   const creationDate = get('Creation Date');
   if (creationDate) payload.dateCreated = creationDate;
 
+  debug('Migration', 'payload', `Row ${rowIndex}: payload built`, {
+    rowIndex,
+    startDate: payload.startDate,
+    endDate: payload.endDate,
+    guest: `${payload.guestFirstName} ${payload.guestLastName}`,
+    rooms: payload.rooms,
+    adults: payload.adults,
+    children: payload.children,
+    fieldCount: Object.keys(payload).length,
+  });
+
   return { payload, error: null };
 }
 
@@ -197,11 +223,20 @@ export async function migrateReservations(
   const { mainApiUrl, apiKey, propertyId } = config;
   const postUrl = `${mainApiUrl.replace(/\/+$/, '')}/postReservation`;
 
+  debug('Migration', 'config', 'API config loaded', {
+    mainApiUrl, propertyId, postUrl,
+  });
+
   // Load cached room types and sources for resolution
   const roomCache = loadRoomDataCache(propertyId);
   const roomTypes = roomCache?.roomTypes ?? [];
   const sourcesCache = loadSourcesCache(propertyId);
   const sources = sourcesCache ?? [];
+
+  info('Migration', 'config', `Cached data: ${roomTypes.length} room types, ${sources.length} sources`, {
+    roomTypeShortCodes: roomTypes.map((r) => r.roomTypeNameShort),
+    sourceNames: sources.map((s) => s.sourceName),
+  });
 
   if (roomTypes.length === 0) {
     warn('Migration', 'config', 'No room types cached — room type resolution may fail');
@@ -268,6 +303,12 @@ export async function migrateReservations(
       });
 
       const result = await window.electronAPI.apiPost({ url: postUrl, apiKey, body: payload });
+
+      debug('Migration', 'response', `Row ${mRow.rowNumber}: HTTP ${result.status}`, {
+        ok: result.ok, status: result.status,
+        data: result.data,
+        error: result.error,
+      });
 
       if (result.ok) {
         const respData = result.data as { success?: boolean; data?: { reservationID?: string }; message?: string } | null;

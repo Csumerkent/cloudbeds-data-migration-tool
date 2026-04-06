@@ -9,6 +9,7 @@ import {
   migrateReservations,
   MigrationProgress,
 } from '../../services/reservationMigrationService';
+import { info, debug } from '../../services/debugLogger';
 import './pages.css';
 
 function ExcelConfiguration() {
@@ -38,16 +39,25 @@ function ExcelConfiguration() {
     setResFile(file);
     setResSummary(null);
     setMigrationProgress(null);
+    if (file) {
+      info('Migration', 'upload', `File selected: ${file.name}`, { fileName: file.name, size: file.size });
+    }
   };
 
   const handleResUpload = async () => {
     if (!resFile) return;
     setResValidating(true);
-    setResSummary(null);
-    setMigrationProgress(null);
+    info('Migration', 'validation', `Starting validation of ${resFile.name}`);
     try {
       const result = await validateReservationFile(resFile);
       setResSummary(result);
+      info('Migration', 'validation', `Validation complete: ${result.validRows} valid, ${result.invalidRows} invalid out of ${result.totalRows}`, {
+        totalRows: result.totalRows, validRows: result.validRows,
+        invalidRows: result.invalidRows, errorCount: result.errors.length,
+      });
+      if (result.errors.length > 0) {
+        debug('Migration', 'validation', 'Validation errors', { errors: result.errors.slice(0, 20) });
+      }
     } finally {
       setResValidating(false);
     }
@@ -56,12 +66,15 @@ function ExcelConfiguration() {
   const handleMigrate = async () => {
     if (!resFile) return;
     setMigrating(true);
-    setMigrationProgress(null);
+    info('Migration', 'start', `Migration initiated for ${resFile.name}`);
     try {
       const result = await migrateReservations(resFile, (p) => {
         setMigrationProgress({ ...p });
       });
       setMigrationProgress(result);
+      info('Migration', 'summary', `Migration finished: ${result.succeeded} succeeded, ${result.failed} failed out of ${result.total}`, {
+        total: result.total, succeeded: result.succeeded, failed: result.failed,
+      });
     } finally {
       setMigrating(false);
     }
