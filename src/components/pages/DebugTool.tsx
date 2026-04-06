@@ -11,26 +11,37 @@ const LEVEL_COLORS: Record<string, string> = {
 
 const ALL_LEVELS: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
 
+type DebugTab = 'all' | 'migration';
+
 function DebugTool() {
   const [logs, setLogs] = useState<LogEntry[]>(() => [...getLogs()]);
+  const [activeTab, setActiveTab] = useState<DebugTab>('all');
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'ALL'>('ALL');
   const [moduleFilter, setModuleFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
+  // Migration-only logs (separate source for the Migration tab)
+  const migrationLogs = useMemo(() => {
+    return logs.filter((l) => l.module === 'Migration');
+  }, [logs]);
+
+  // Base set for current tab
+  const baseLogs = activeTab === 'migration' ? migrationLogs : logs;
+
   const modules = useMemo(() => {
     const m = getModules();
-    // Also check current logs in case getModules hasn't updated
     const fromLogs = [...new Set(logs.map((l) => l.module))];
     return [...new Set([...m, ...fromLogs])].sort();
   }, [logs]);
 
   const filtered = useMemo(() => {
-    let result = logs;
+    let result = baseLogs;
     if (levelFilter !== 'ALL') {
       result = result.filter((l) => l.level === levelFilter);
     }
-    if (moduleFilter !== 'ALL') {
+    // Module filter only applies on All tab
+    if (activeTab === 'all' && moduleFilter !== 'ALL') {
       result = result.filter((l) => l.module === moduleFilter);
     }
     if (search.trim()) {
@@ -44,7 +55,7 @@ function DebugTool() {
       );
     }
     return result;
-  }, [logs, levelFilter, moduleFilter, search]);
+  }, [baseLogs, activeTab, levelFilter, moduleFilter, search]);
 
   const handleRefresh = () => {
     setLogs([...getLogs()]);
@@ -77,7 +88,7 @@ function DebugTool() {
     const indices = new Set<number>();
     filtered.forEach((entry) => {
       if (entry.payload !== undefined) {
-        indices.add(logs.indexOf(entry));
+        indices.add(baseLogs.indexOf(entry));
       }
     });
     setExpandedRows(indices);
@@ -87,13 +98,51 @@ function DebugTool() {
     setExpandedRows(new Set());
   };
 
+  const switchTab = (tab: DebugTab) => {
+    setActiveTab(tab);
+    setExpandedRows(new Set());
+    // Reset module filter when switching to Migration tab
+    if (tab === 'migration') {
+      setModuleFilter('ALL');
+    }
+  };
+
+  const migrationCount = migrationLogs.length;
+
+  // Determine which columns to show based on tab
+  const showModule = activeTab === 'all';
+
   return (
     <div className="config-page" style={{ maxWidth: 1100 }}>
       <h3>Debug Tool</h3>
 
-      <div className="config-note config-note--compact">
-        Session-based debug log. Entries are in memory only and reset on app close.
+      {/* Tab bar */}
+      <div className="debug-tabs">
+        <button
+          className={`debug-tab${activeTab === 'all' ? ' debug-tab--active' : ''}`}
+          onClick={() => switchTab('all')}
+        >
+          All Logs
+        </button>
+        <button
+          className={`debug-tab${activeTab === 'migration' ? ' debug-tab--active' : ''}`}
+          onClick={() => switchTab('migration')}
+        >
+          Migration{migrationCount > 0 ? ` (${migrationCount})` : ''}
+        </button>
       </div>
+
+      {activeTab === 'all' && (
+        <div className="config-note config-note--compact">
+          Session-based debug log. Entries are in memory only and reset on app close.
+        </div>
+      )}
+
+      {activeTab === 'migration' && (
+        <div className="config-note config-note--compact">
+          Migration logs: upload, validation, parsing, payload build, resolve, API request/response, row results.
+        </div>
+      )}
 
       {/* Controls */}
       <div className="debug-controls">
@@ -111,14 +160,16 @@ function DebugTool() {
           {ALL_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
 
-        <select
-          className="debug-select"
-          value={moduleFilter}
-          onChange={(e) => setModuleFilter(e.target.value)}
-        >
-          <option value="ALL">All Modules</option>
-          {modules.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
+        {showModule && (
+          <select
+            className="debug-select"
+            value={moduleFilter}
+            onChange={(e) => setModuleFilter(e.target.value)}
+          >
+            <option value="ALL">All Modules</option>
+            {modules.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        )}
 
         <input
           className="debug-search"
@@ -128,7 +179,7 @@ function DebugTool() {
           onChange={(e) => setSearch(e.target.value)}
         />
 
-        <span className="debug-count">{filtered.length} / {logs.length}</span>
+        <span className="debug-count">{filtered.length} / {baseLogs.length}</span>
       </div>
 
       {/* Log table */}
@@ -141,7 +192,7 @@ function DebugTool() {
               <tr>
                 <th style={{ width: 150 }}>Time</th>
                 <th style={{ width: 50 }}>Level</th>
-                <th style={{ width: 100 }}>Module</th>
+                {showModule && <th style={{ width: 100 }}>Module</th>}
                 <th style={{ width: 100 }}>Step</th>
                 <th>Message</th>
                 <th style={{ width: 40 }}></th>
@@ -149,14 +200,14 @@ function DebugTool() {
             </thead>
             <tbody>
               {filtered.map((entry) => {
-                const globalIdx = logs.indexOf(entry);
+                const globalIdx = baseLogs.indexOf(entry);
                 const isExpanded = expandedRows.has(globalIdx);
                 const hasPayload = entry.payload !== undefined;
                 return (
                   <tr key={globalIdx} onClick={() => hasPayload && toggleRow(globalIdx)} style={{ cursor: hasPayload ? 'pointer' : 'default' }}>
                     <td style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{entry.timestamp}</td>
                     <td style={{ color: LEVEL_COLORS[entry.level] ?? '#444', fontWeight: 600, fontSize: '0.75rem' }}>{entry.level}</td>
-                    <td style={{ fontSize: '0.78rem' }}>{entry.module}</td>
+                    {showModule && <td style={{ fontSize: '0.78rem' }}>{entry.module}</td>}
                     <td style={{ fontSize: '0.78rem', color: '#666' }}>{entry.step}</td>
                     <td style={{ fontSize: '0.78rem' }}>
                       {entry.message}

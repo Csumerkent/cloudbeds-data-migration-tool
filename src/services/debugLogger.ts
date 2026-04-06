@@ -49,3 +49,7 @@ export function clearLogs(): void {
 export function getModules(): string[] {
   return [...new Set(logs.map((l) => l.module))];
 }
+
+export function getLogsByModule(module: string): LogEntry[] {
+  return logs.filter((l) => l.module === module);
+}
