@@ -114,6 +114,32 @@ ipcMain.handle(
   },
 );
 
+// IPC: Authenticated POST request to a Cloudbeds API endpoint (form-encoded)
+ipcMain.handle(
+  'api-post',
+  async (_event, params: { url: string; apiKey: string; body: Record<string, string> }) => {
+    try {
+      const formBody = new URLSearchParams(params.body).toString();
+      const response = await fetch(params.url, {
+        method: 'POST',
+        headers: {
+          'x-api-key': params.apiKey,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
+        body: formBody,
+        signal: AbortSignal.timeout(30000),
+      });
+
+      const data = await response.json();
+      return { ok: response.ok, status: response.status, data };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      return { ok: false, status: 0, data: null, error: msg };
+    }
+  },
+);
+
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {

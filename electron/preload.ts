@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('test-other-url', params),
   apiGet: (params: { url: string; apiKey: string }) =>
     ipcRenderer.invoke('api-get', params),
+  apiPost: (params: { url: string; apiKey: string; body: Record<string, string> }) =>
+    ipcRenderer.invoke('api-post', params),
 });
