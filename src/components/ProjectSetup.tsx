@@ -3,14 +3,14 @@ import ApiConfiguration from './pages/ApiConfiguration';
 import SourceConfiguration from './pages/SourceConfiguration';
 import RoomConfiguration from './pages/RoomConfiguration';
 import RateConfiguration from './pages/RateConfiguration';
-import ReservationExcelInput from './pages/ReservationExcelInput';
+import ExcelConfiguration from './pages/ExcelConfiguration';
 
 const SETUP_TABS = [
   'API Configuration',
   'Source Configuration',
   'Room Configuration',
   'Rate Configuration',
-  'Reservation Excel Input',
+  'Excel',
 ] as const;
 
 type SetupTab = (typeof SETUP_TABS)[number];
@@ -20,7 +20,7 @@ const TAB_COMPONENTS: Record<SetupTab, React.FC> = {
   'Source Configuration': SourceConfiguration,
   'Room Configuration': RoomConfiguration,
   'Rate Configuration': RateConfiguration,
-  'Reservation Excel Input': ReservationExcelInput,
+  'Excel': ExcelConfiguration,
 };
 
 function ProjectSetup() {
