@@ -123,3 +123,12 @@ export async function fetchRoomData(): Promise<FetchRoomDataResult> {
 
   return { success: true, message: `Loaded ${roomTypes.length} room types and ${rooms.length} rooms.`, roomTypes, rooms };
 }
+
+// --- Resolution ---
+
+export function resolveRoomTypeId(roomTypes: CloudbedsRoomType[], shortCode: string): string {
+  if (!Array.isArray(roomTypes)) return '';
+  const lower = shortCode.trim().toLowerCase();
+  const match = roomTypes.find((r) => r.roomTypeNameShort.trim().toLowerCase() === lower);
+  return match ? match.roomTypeID : '';
+}

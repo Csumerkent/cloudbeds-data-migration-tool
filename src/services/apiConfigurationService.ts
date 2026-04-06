@@ -32,6 +32,13 @@ export interface ApiGetResult {
   error?: string;
 }
 
+export interface ApiPostResult {
+  ok: boolean;
+  status: number;
+  data: unknown;
+  error?: string;
+}
+
 declare global {
   interface Window {
     electronAPI: {
@@ -39,6 +46,7 @@ declare global {
       testConnection: (params: TestConnectionParams) => Promise<TestConnectionResult>;
       testOtherUrl: (params: { baseUrl: string; testPath: string; apiKey: string }) => Promise<TestOtherUrlResult>;
       apiGet: (params: { url: string; apiKey: string }) => Promise<ApiGetResult>;
+      apiPost: (params: { url: string; apiKey: string; body: Record<string, string> }) => Promise<ApiPostResult>;
     };
   }
 }
