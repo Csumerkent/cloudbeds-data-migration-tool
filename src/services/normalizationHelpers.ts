@@ -210,7 +210,7 @@ export function normalizeCountry(raw: string | null | undefined): CountryNormali
 export type NormalizedPayment = 'credit' | 'ebanking' | 'cash';
 
 const CREDIT_EXACT = new Set([
-  'credit', 'credit card', 'creditcard', 'credit_card', 'card',
+  'credit', 'credit card', 'creditcard', 'card',
   'cc', 'vi', 'va', 'mc',
   'visa', 'visa card',
   'mastercard', 'master card', 'master',
@@ -218,15 +218,26 @@ const CREDIT_EXACT = new Set([
   'maestro', 'discover', 'diners', 'diners club', 'jcb', 'unionpay',
 ]);
 
-const BANK_KEYWORDS = ['bank', 'eft', 'transfer', 'havale', 'wire', 'ebanking', 'e-banking', 'online bank'];
+const BANK_KEYWORDS = ['bank', 'eft', 'transfer', 'havale', 'wire', 'ebanking', 'e banking', 'online bank'];
 
 /**
  * Normalize a raw payment value to one of: 'credit', 'ebanking', 'cash'.
- * Anything not recognized falls back to 'cash'.
+ *  - card-like values         → 'credit'
+ *  - bank-transfer-like values → 'ebanking'
+ *  - everything else           → 'cash'
+ *
+ * Bank keywords take precedence over card fuzzy matches so that strings like
+ * "bank transfer" win over "card" if both happen to be present.
  */
 export function normalizePayment(raw: string | null | undefined): NormalizedPayment {
   if (raw == null) return 'cash';
-  const v = String(raw).trim().toLowerCase().replace(/\s+/g, ' ');
+  // Normalize separators (underscore, dash) to spaces and collapse whitespace
+  // so values like "BANK_TRANSFER" or "credit-card" match cleanly.
+  const v = String(raw)
+    .trim()
+    .toLowerCase()
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\s+/g, ' ');
   if (!v) return 'cash';
 
   if (CREDIT_EXACT.has(v)) return 'credit';
