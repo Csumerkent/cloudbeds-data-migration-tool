@@ -291,8 +291,12 @@ export function normalizeSourceKey(raw: string | null | undefined): string {
  * Produce a comparison key for rate matching:
  *  - lowercase
  *  - trim
- *  - remove dashes, underscores, and whitespace entirely so that variants like
- *    "direct-ro", "direct ro", "directro" all collapse to "directro".
+ *  - remove dashes, underscores, and whitespace entirely
+ *
+ * Examples (all map to the same key):
+ *   "direct-ro", "direct ro", "DirectRO", "directro" → "directro"
+ *   "walk-in", "walk in", "Walkin"                   → "walkin"
+ *   "FORMERPMS", "formerpms"                         → "formerpms"
  */
 export function normalizeRateKey(raw: string | null | undefined): string {
   if (raw == null) return '';
