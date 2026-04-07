@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import { loadApiConfig } from './apiConfigurationService';
 import { loadRoomDataCache, resolveRoomTypeId, CloudbedsRoomType } from './roomConfigurationService';
 import { loadSourcesCache, resolveSourceId, CloudbedsSource } from './sourceConfigurationService';
-import { normalizeGender, normalizeCountry, normalizePayment } from './normalizationHelpers';
+import { normalizeGender, normalizeCountry, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
 import { info, debug, warn, error as logError } from './debugLogger';
 
 // ---------------------------------------------------------------------------
@@ -140,17 +140,21 @@ function buildPayload(
     sendEmailConfirmation: emailConfirmation === 'true' ? '1' : '0',
   };
 
-  // Optional: source
-  const sourceCode = get('Source Code');
-  if (sourceCode) {
-    const sourceID = resolveSourceId(sources, sourceCode);
-    debug('Migration', 'resolve', `Row ${rowIndex}: source "${sourceCode}" → ${sourceID || '(not found)'}`, {
-      sourceCode, sourceID, availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+  // Optional: source — normalize the Excel value before matching
+  const rawSourceCode = get('Source Code');
+  const normalizedSourceKey = normalizeSourceKey(rawSourceCode);
+  if (rawSourceCode) {
+    debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
+      raw: rawSourceCode, key: normalizedSourceKey,
+    });
+    const sourceID = resolveSourceId(sources, rawSourceCode);
+    debug('Migration', 'resolve', `Row ${rowIndex}: source "${rawSourceCode}" → ${sourceID || '(not found)'}`, {
+      sourceCode: rawSourceCode, sourceKey: normalizedSourceKey, sourceID, availableSources: sources.map((s) => s.sourceName).slice(0, 10),
     });
     if (sourceID) {
       payload.sourceID = sourceID;
     } else {
-      warn('Migration', 'resolve', `Row ${rowIndex}: source "${sourceCode}" not resolved — omitting`, { rowIndex, sourceCode });
+      warn('Migration', 'resolve', `Row ${rowIndex}: source "${rawSourceCode}" not resolved — omitting`, { rowIndex, sourceCode: rawSourceCode, sourceKey: normalizedSourceKey });
     }
   }
 
@@ -184,9 +188,15 @@ function buildPayload(
   const eta = get('ETA');
   if (eta) payload.estimatedArrivalTime = eta;
 
-  // Optional: rate code
-  const rateCode = get('Rate Code');
-  if (rateCode) payload.ratePlanNamePublic = rateCode;
+  // Optional: rate code — normalize the Excel value before matching
+  const rawRateCode = get('Rate Code');
+  const normalizedRateKey = normalizeRateKey(rawRateCode);
+  if (rawRateCode) {
+    debug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
+      raw: rawRateCode, key: normalizedRateKey,
+    });
+    payload.ratePlanNamePublic = rawRateCode;
+  }
 
   // Optional: custom field
   const customField = get('Custom Field');
