@@ -376,6 +376,61 @@ function buildPayload(
     fieldCount: Object.keys(payload).length,
   });
 
+  // Consolidated per-row summary containing every raw → normalized value and
+  // the resolved IDs. This is the single entry to inspect when investigating
+  // a specific row.
+  info('Migration', 'row-summary', `Row ${rowIndex}: summary`, {
+    rowIndex,
+    bucket,
+    roomType: {
+      raw: roomTypeCode,
+      resolvedRoomTypeID: roomTypeID,
+    },
+    source: {
+      raw: rawSourceCode || '(blank)',
+      normalized: normalizedSourceKey,
+      chosenName: chosenSourceName,
+      chosenID: chosenSourceID,
+      usedDefault,
+      strategy: strategyUsed,
+    },
+    rate: {
+      raw: rawRateCode || '(blank)',
+      normalized: normalizedRateKey,
+      chosenName: chosenRateName,
+      resolvedRoomRateID: chosenRoomRateID,
+      usedDefault: usedDefaultRate,
+      strategy: rateStrategy,
+    },
+    gender: {
+      raw: rawGender,
+      normalized: normalizedGender,
+    },
+    country: {
+      raw: country,
+      normalized: countryResult.iso2,
+      resolved: countryResult.resolved,
+    },
+    payment: {
+      raw: rawPaymentMethod,
+      normalized: paymentMethod,
+    },
+    payloadSummary: {
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      guestCountry: payload.guestCountry,
+      guestGender: payload.guestGender,
+      guestEmail: payload.guestEmail,
+      paymentMethod: payload.paymentMethod,
+      sendEmailConfirmation: payload.sendEmailConfirmation,
+      sourceID: payload.sourceID ?? '(omitted)',
+      rooms: payload.rooms,
+      adults: payload.adults,
+      children: payload.children,
+      fieldCount: Object.keys(payload).length,
+    },
+  });
+
   return { payload, error: null };
 }
 
@@ -529,6 +584,29 @@ export async function migrateReservations(
     progress.completed++;
     onProgress({ ...progress, rows: [...progress.rows] });
   }
+
+  // Final summary log — always emitted, even when 0 rows were processed.
+  // Displayed at the top of the Migration tab (newest-first ordering).
+  const failedRows = migrationRows
+    .filter((r) => r.status === 'failed' || r.status === 'skipped')
+    .map((r) => ({
+      rowNumber: r.rowNumber,
+      status: r.status,
+      reason: r.message,
+    }));
+
+  info(
+    'Migration',
+    'summary',
+    `Migration summary: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`,
+    {
+      total: progress.total,
+      succeeded: progress.succeeded,
+      failed: progress.failed,
+      failedRowNumbers: failedRows.map((r) => r.rowNumber),
+      failedRows,
+    },
+  );
 
   info('Migration', 'complete', `Migration done: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`);
   return progress;

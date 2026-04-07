@@ -21,9 +21,12 @@ function DebugTool() {
   const [search, setSearch] = useState('');
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-  // Migration-only logs (separate source for the Migration tab)
+  // Migration-only logs (separate source for the Migration tab).
+  // Migration logs are displayed newest-first so the most recent activity
+  // (including the final summary) is always visible at the top without
+  // scrolling.
   const migrationLogs = useMemo(() => {
-    return logs.filter((l) => l.module === 'Migration');
+    return [...logs].filter((l) => l.module === 'Migration').reverse();
   }, [logs]);
 
   // Base set for current tab
