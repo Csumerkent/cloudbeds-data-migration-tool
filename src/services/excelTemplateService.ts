@@ -57,12 +57,28 @@ const INSTRUCTION_ROWS: string[][] = [
   ['- All dates must be in YYYY-MM-DD format (e.g. 2025-06-15).'],
   ['- Departure date must be later than Arrival date.'],
   [],
-  ['Country'],
-  ['- Country must be a 2-letter ISO code (e.g. US, GB, DE, TR).'],
-  [],
   ['Room Type'],
-  ['- Enter the room type short code (e.g. STD, DLX), NOT the Cloudbeds numeric ID.'],
-  ['- The application will resolve the code to the correct Cloudbeds room type during migration.'],
+  ['- Enter the room type SHORT CODE (e.g. STD, DLX), NOT the Cloudbeds numeric ID.'],
+  ['- The application will resolve the short code to the correct Cloudbeds room type during migration.'],
+  [],
+  ['Gender (normalized)'],
+  ['- Final outgoing values are only: M, F, N/A.'],
+  ['- Examples that become M: Male, M, Man, Boy, Erkek, E.'],
+  ['- Examples that become F: Female, F, Woman, Girl, Kadın, Kadin, Bayan, Kız, Kiz.'],
+  ['- Blank, unknown, or unsupported values become N/A.'],
+  ['- Raw Excel gender text is never sent to the API.'],
+  [],
+  ['Country (normalized to ISO2)'],
+  ['- All countries are normalized to a 2-letter ISO code before sending.'],
+  ['- Accepted inputs: ISO2 (TR), ISO3 (TUR), English name (Turkey), Turkish name (Türkiye).'],
+  ['- Examples: TUR / Turkey / Türkiye → TR; USA / United States / Amerika Birleşik Devletleri → US; DEU / Germany / Almanya → DE.'],
+  ['- This field is always populated. If the value cannot be resolved, the fallback is TR.'],
+  [],
+  ['Payment Method (normalized)'],
+  ['- Final outgoing values are only: credit, ebanking, cash.'],
+  ['- Card-like values become "credit": Visa, MC, Amex, VI, VA, Mastercard, Master Card, Credit Card, CC, Card.'],
+  ['- Bank-transfer-like values become "ebanking": Bank, Bank Transfer, EFT, Havale, Wire, any phrase containing bank/eft/transfer.'],
+  ['- Everything else becomes "cash".'],
   [],
   ['Source Code'],
   ['- Enter the source name/code (e.g. Direct - Hotel, Booking.com), NOT the Cloudbeds source ID.'],
@@ -339,10 +355,9 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
             rowErrors.push('Departure must be later than Arrival');
           }
 
-          // Country ISO2
-          if (country && !/^[A-Z]{2}$/i.test(country)) {
-            rowErrors.push(`Country "${country}" is not a valid 2-letter ISO code`);
-          }
+          // Country: any non-empty value is accepted here. The migration
+          // normalizes ISO2 / ISO3 / English / Turkish names to ISO2 (with TR
+          // fallback), so this validation no longer rejects non-ISO2 inputs.
 
           if (rowErrors.length > 0) {
             invalidCount++;
