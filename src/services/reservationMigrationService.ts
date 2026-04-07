@@ -211,17 +211,23 @@ function buildPayload(
   }
 
   // Build rooms/adults/children as JSON arrays (API requires array format).
-  // When a rate is resolved, include roomRateID inside the rooms entry.
+  //
+  // Target structure (form-urlencoded, values are JSON-stringified arrays):
+  //   rooms=[{"roomTypeID":"...","quantity":1,"roomRateID":"..."}]
+  //   adults=[{"roomTypeID":"...","quantity":1}]
+  //   children=[{"roomTypeID":"...","quantity":0}]
+  //
+  // Only `rooms` entries carry `roomRateID` (and only when a rate was resolved).
   const roomsEntry: Record<string, unknown> = {
-    quantity: Number(roomCount) || 1,
     roomTypeID,
+    quantity: Number(roomCount) || 1,
   };
   if (chosenRoomRateID) {
     roomsEntry.roomRateID = chosenRoomRateID;
   }
   const roomsArray = JSON.stringify([roomsEntry]);
-  const adultsArray = JSON.stringify([{ quantity: Number(adult) || 1, roomTypeID }]);
-  const childrenArray = JSON.stringify([{ quantity: Number(child) || 0, roomTypeID }]);
+  const adultsArray = JSON.stringify([{ roomTypeID, quantity: Number(adult) || 1 }]);
+  const childrenArray = JSON.stringify([{ roomTypeID, quantity: Number(child) || 0 }]);
 
   // Build base payload
   const payload: Record<string, string> = {
