@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { loadApiConfig } from './apiConfigurationService';
 import { loadRoomDataCache, resolveRoomTypeId, CloudbedsRoomType } from './roomConfigurationService';
 import { loadSourcesCache, resolveSourceId, CloudbedsSource } from './sourceConfigurationService';
+import { normalizeGender, normalizeCountry, normalizePayment } from './normalizationHelpers';
 import { info, debug, warn, error as logError } from './debugLogger';
 
 // ---------------------------------------------------------------------------
@@ -100,8 +101,23 @@ function buildPayload(
   const adult = get('Adult *') || '1';
   const child = get('Child') || '0';
   const roomCount = get('Room Count') || '1';
-  const paymentMethod = get('Payment Method *') || 'cash';
   const emailConfirmation = get('Email Confirmation') || 'false';
+
+  // Normalize payment method (credit / ebanking / cash)
+  const rawPaymentMethod = get('Payment Method *');
+  const paymentMethod = normalizePayment(rawPaymentMethod);
+  debug('Migration', 'normalize', `Row ${rowIndex}: payment "${rawPaymentMethod}" → "${paymentMethod}"`, {
+    raw: rawPaymentMethod, normalized: paymentMethod,
+  });
+
+  // Normalize country to ISO2 (always populated; falls back to TR)
+  const countryResult = normalizeCountry(country);
+  debug('Migration', 'normalize', `Row ${rowIndex}: country "${country}" → "${countryResult.iso2}"${countryResult.resolved ? '' : ' (fallback)'}`, {
+    raw: country, normalized: countryResult.iso2, resolved: countryResult.resolved,
+  });
+  if (!countryResult.resolved) {
+    warn('Migration', 'normalize', `Row ${rowIndex}: country "${country}" not recognized — falling back to TR`, { rowIndex, raw: country });
+  }
 
   // Build rooms/adults/children as JSON arrays (API requires array format)
   const roomsArray = JSON.stringify([{ quantity: Number(roomCount) || 1, roomTypeID }]);
@@ -116,7 +132,7 @@ function buildPayload(
     guestFirstName: firstName,
     guestLastName: lastName,
     guestEmail: email,
-    guestCountry: country.toUpperCase(),
+    guestCountry: countryResult.iso2,
     rooms: roomsArray,
     adults: adultsArray,
     children: childrenArray,
@@ -144,9 +160,13 @@ function buildPayload(
     payload.thirdPartyIdentifier = thirdPartyCode;
   }
 
-  // Optional: gender
-  const gender = get('Gender');
-  if (gender) payload.guestGender = gender;
+  // Gender — always normalized to M / F / N/A; never raw Excel text
+  const rawGender = get('Gender');
+  const normalizedGender = normalizeGender(rawGender);
+  debug('Migration', 'normalize', `Row ${rowIndex}: gender "${rawGender}" → "${normalizedGender}"`, {
+    raw: rawGender, normalized: normalizedGender,
+  });
+  payload.guestGender = normalizedGender;
 
   // Optional: zip
   const zip = get('Zip');
