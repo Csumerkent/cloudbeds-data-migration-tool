@@ -181,11 +181,10 @@ export function normalizeCountry(raw: string | null | undefined): CountryNormali
   const trimmed = String(raw).trim();
   if (!trimmed) return { iso2: 'TR', resolved: false };
 
-  // ISO2 fast path
+  // ISO2 fast path: any 2-letter code is kept as-is (uppercased).
   if (trimmed.length === 2 && /^[A-Za-z]{2}$/.test(trimmed)) {
     const upper = trimmed.toUpperCase();
-    // Accept any 2-letter code; if in our static table, treat as resolved.
-    return { iso2: upper, resolved: ISO2_SET.has(upper) || true };
+    return { iso2: upper, resolved: ISO2_SET.has(upper) };
   }
 
   const key = trimmed.toLowerCase().replace(/\s+/g, ' ');
