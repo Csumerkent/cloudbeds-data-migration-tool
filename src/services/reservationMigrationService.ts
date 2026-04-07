@@ -38,7 +38,24 @@ export interface MigrationProgress {
   succeeded: number;
   failed: number;
   rows: MigrationRow[];
+  stopped?: boolean;           // True when the user pressed Stop
 }
+
+/**
+ * Mutable cancellation handle. The UI flips `cancelled = true` when the user
+ * presses Stop; the migration loop checks this between rows and between
+ * batches and exits cleanly. Already-sent API requests are NOT aborted.
+ */
+export interface MigrationCancellation {
+  cancelled: boolean;
+}
+
+// Batch + concurrency tuning. Within a batch, up to BATCH_CONCURRENCY rows are
+// in-flight at the same time. Batches run sequentially so progress callbacks
+// fire at predictable boundaries and so the user can stop cleanly between
+// batches without overwhelming the API.
+const BATCH_SIZE = 50;
+const BATCH_CONCURRENCY = 10;
 
 // ---------------------------------------------------------------------------
 // Parse uploaded file into raw row maps
@@ -441,6 +458,7 @@ function buildPayload(
 export async function migrateReservations(
   file: File,
   onProgress: (progress: MigrationProgress) => void,
+  cancellation?: MigrationCancellation,
 ): Promise<MigrationProgress> {
   info('Migration', 'start', `Starting reservation migration from ${file.name}`);
 
@@ -514,15 +532,28 @@ export async function migrateReservations(
     rows: migrationRows,
   };
 
-  onProgress({ ...progress, rows: [...progress.rows] });
+  const emitProgress = () => {
+    onProgress({ ...progress, rows: [...progress.rows] });
+  };
+  emitProgress();
 
-  // Process each row sequentially
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const mRow = migrationRows[i];
+  // Process a single row: build the payload, send it, update mRow + counters.
+  // This function is invoked from a worker pool and never throws.
+  const processRow = async (rowIndex: number): Promise<void> => {
+    const row = rows[rowIndex];
+    const mRow = migrationRows[rowIndex];
 
     // Build payload
-    const { payload, error: buildError } = buildPayload(row, mRow.rowNumber, propertyId, roomTypes, sources, sourceDefaults, rates, rateDefaults);
+    const { payload, error: buildError } = buildPayload(
+      row,
+      mRow.rowNumber,
+      propertyId,
+      roomTypes,
+      sources,
+      sourceDefaults,
+      rates,
+      rateDefaults,
+    );
 
     if (buildError || !payload) {
       mRow.status = 'skipped';
@@ -530,13 +561,12 @@ export async function migrateReservations(
       progress.completed++;
       progress.failed++;
       debug('Migration', 'skip', `Row ${mRow.rowNumber} skipped: ${mRow.message}`);
-      onProgress({ ...progress, rows: [...progress.rows] });
-      continue;
+      return;
     }
 
     mRow.payload = payload;
     mRow.status = 'sending';
-    onProgress({ ...progress, rows: [...progress.rows] });
+    emitProgress();
 
     try {
       debug('Migration', 'send', `Sending row ${mRow.rowNumber}`, {
@@ -582,7 +612,61 @@ export async function migrateReservations(
     }
 
     progress.completed++;
-    onProgress({ ...progress, rows: [...progress.rows] });
+    emitProgress();
+  };
+
+  // Run a batch with bounded concurrency. Workers cooperatively pull row
+  // indices from a shared cursor; if the user cancels mid-batch, workers stop
+  // picking up new rows but already in-flight requests are allowed to settle.
+  const runBatch = async (indices: number[]): Promise<void> => {
+    let cursor = 0;
+    const workerCount = Math.min(BATCH_CONCURRENCY, indices.length);
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < workerCount; w++) {
+      workers.push((async () => {
+        while (cursor < indices.length) {
+          if (cancellation?.cancelled) return;
+          const next = cursor++;
+          await processRow(indices[next]);
+        }
+      })());
+    }
+    await Promise.all(workers);
+  };
+
+  // Walk the rows in sequential batches. Cancellation is checked between
+  // batches and inside each worker.
+  for (let batchStart = 0; batchStart < rows.length; batchStart += BATCH_SIZE) {
+    if (cancellation?.cancelled) {
+      progress.stopped = true;
+      info('Migration', 'cancel', `Migration stopped by user before row ${migrationRows[batchStart]?.rowNumber ?? batchStart + 2}`, {
+        completed: progress.completed,
+        total: progress.total,
+      });
+      break;
+    }
+    const batchEnd = Math.min(batchStart + BATCH_SIZE, rows.length);
+    const batchIndices: number[] = [];
+    for (let i = batchStart; i < batchEnd; i++) batchIndices.push(i);
+
+    debug('Migration', 'batch', `Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}: rows ${batchIndices[0] + 2}–${batchIndices[batchIndices.length - 1] + 2} (concurrency ${BATCH_CONCURRENCY})`, {
+      batchSize: batchIndices.length,
+      concurrency: BATCH_CONCURRENCY,
+      completedSoFar: progress.completed,
+      total: progress.total,
+    });
+
+    await runBatch(batchIndices);
+    emitProgress();
+
+    if (cancellation?.cancelled) {
+      progress.stopped = true;
+      info('Migration', 'cancel', `Migration stopped by user after batch ending at row ${migrationRows[batchEnd - 1]?.rowNumber ?? batchEnd + 1}`, {
+        completed: progress.completed,
+        total: progress.total,
+      });
+      break;
+    }
   }
 
   // Final summary log — always emitted, even when 0 rows were processed.
@@ -595,19 +679,27 @@ export async function migrateReservations(
       reason: r.message,
     }));
 
+  const summaryHeadline = progress.stopped
+    ? `Migration STOPPED by user: ${progress.succeeded} succeeded, ${progress.failed} failed, ${progress.total - progress.completed} not processed (out of ${progress.total})`
+    : `Migration summary: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`;
+
   info(
     'Migration',
     'summary',
-    `Migration summary: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`,
+    summaryHeadline,
     {
       total: progress.total,
+      completed: progress.completed,
       succeeded: progress.succeeded,
       failed: progress.failed,
+      stopped: !!progress.stopped,
+      notProcessed: progress.total - progress.completed,
       failedRowNumbers: failedRows.map((r) => r.rowNumber),
       failedRows,
     },
   );
 
-  info('Migration', 'complete', `Migration done: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`);
+  info('Migration', 'complete', summaryHeadline);
+  emitProgress();
   return progress;
 }
