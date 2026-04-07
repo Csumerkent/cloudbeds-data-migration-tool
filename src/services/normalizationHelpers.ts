@@ -273,7 +273,8 @@ export function normalizePayment(raw: string | null | undefined): NormalizedPaym
  *  - trim
  *  - collapse repeated whitespace
  *  - normalize underscores and dashes to spaces
- *  - drop most non-alphanumeric punctuation (keeps . and space)
+ *  - drop punctuation (including '.', ',', '/', etc.) so variants like
+ *    "Booking.com", "booking com", "BOOKING-COM" all collapse to "booking com"
  */
 export function normalizeSourceKey(raw: string | null | undefined): string {
   if (raw == null) return '';
@@ -281,7 +282,7 @@ export function normalizeSourceKey(raw: string | null | undefined): string {
     .toLowerCase()
     .trim()
     .replace(/[_\-]+/g, ' ')
-    .replace(/[^a-z0-9. ]+/g, ' ')
+    .replace(/[^a-z0-9 ]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
