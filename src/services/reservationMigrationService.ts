@@ -1,7 +1,21 @@
 import * as XLSX from 'xlsx';
 import { loadApiConfig } from './apiConfigurationService';
 import { loadRoomDataCache, resolveRoomTypeId, CloudbedsRoomType } from './roomConfigurationService';
-import { loadSourcesCache, resolveSourceId, CloudbedsSource } from './sourceConfigurationService';
+import {
+  loadSourcesCache,
+  findSourceMatch,
+  loadSourceDefaults,
+  CloudbedsSource,
+  SourceDefaults,
+} from './sourceConfigurationService';
+import {
+  loadRatesCache,
+  findRateMatch,
+  loadRateDefaults,
+  CloudbedsRateEntry,
+  RateDefaults,
+} from './rateConfigurationService';
+import { normalizeGender, normalizeCountry, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
 import { info, debug, warn, error as logError } from './debugLogger';
 
 // ---------------------------------------------------------------------------
@@ -24,7 +38,24 @@ export interface MigrationProgress {
   succeeded: number;
   failed: number;
   rows: MigrationRow[];
+  stopped?: boolean;           // True when the user pressed Stop
 }
+
+/**
+ * Mutable cancellation handle. The UI flips `cancelled = true` when the user
+ * presses Stop; the migration loop checks this between rows and between
+ * batches and exits cleanly. Already-sent API requests are NOT aborted.
+ */
+export interface MigrationCancellation {
+  cancelled: boolean;
+}
+
+// Batch + concurrency tuning. Within a batch, up to BATCH_CONCURRENCY rows are
+// in-flight at the same time. Batches run sequentially so progress callbacks
+// fire at predictable boundaries and so the user can stop cleanly between
+// batches without overwhelming the API.
+const BATCH_SIZE = 50;
+const BATCH_CONCURRENCY = 10;
 
 // ---------------------------------------------------------------------------
 // Parse uploaded file into raw row maps
@@ -66,6 +97,9 @@ function buildPayload(
   propertyId: string,
   roomTypes: CloudbedsRoomType[],
   sources: CloudbedsSource[],
+  sourceDefaults: SourceDefaults,
+  rates: CloudbedsRateEntry[],
+  rateDefaults: RateDefaults,
 ): { payload: Record<string, string> | null; error: string | null } {
   const get = (header: string): string => (row[header] ?? '').trim();
 
@@ -100,13 +134,116 @@ function buildPayload(
   const adult = get('Adult *') || '1';
   const child = get('Child') || '0';
   const roomCount = get('Room Count') || '1';
-  const paymentMethod = get('Payment Method *') || 'cash';
-  const emailConfirmation = get('Email Confirmation') || 'false';
 
-  // Build rooms/adults/children as JSON arrays (API requires array format)
-  const roomsArray = JSON.stringify([{ quantity: Number(roomCount) || 1, roomTypeID }]);
-  const adultsArray = JSON.stringify([{ quantity: Number(adult) || 1, roomTypeID }]);
-  const childrenArray = JSON.stringify([{ quantity: Number(child) || 0, roomTypeID }]);
+  // Normalize payment method (credit / ebanking / cash)
+  const rawPaymentMethod = get('Payment Method *');
+  const paymentMethod = normalizePayment(rawPaymentMethod);
+  debug('Migration', 'normalize', `Row ${rowIndex}: payment "${rawPaymentMethod}" → "${paymentMethod}"`, {
+    raw: rawPaymentMethod, normalized: paymentMethod,
+  });
+
+  // Normalize country to ISO2 (always populated; falls back to TR)
+  const countryResult = normalizeCountry(country);
+  debug('Migration', 'normalize', `Row ${rowIndex}: country "${country}" → "${countryResult.iso2}"${countryResult.resolved ? '' : ' (fallback)'}`, {
+    raw: country, normalized: countryResult.iso2, resolved: countryResult.resolved,
+  });
+  if (!countryResult.resolved) {
+    warn('Migration', 'normalize', `Row ${rowIndex}: country "${country}" not recognized — falling back to TR`, { rowIndex, raw: country });
+  }
+
+  // Determine past vs future reservation once (used by both source and rate
+  // default selection). Reservations with arrival < today are considered past.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const arrivalDate = new Date(arrival);
+  const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
+  const bucket = isPastReservation ? 'past' : 'future';
+
+  // Rate resolution (scoped to this row's roomTypeID):
+  //  1. If Excel rate is filled → exact / normalized / contains match against
+  //     configured rates for this room type.
+  //  2. If blank or no match → fall back to the configured past/future
+  //     default rate name, again scoped to this room type.
+  //  3. When a rate is resolved, its `rateID` becomes the `roomRateID` in the
+  //     rooms array.
+  const rawRateCode = get('Rate Code');
+  const normalizedRateKey = normalizeRateKey(rawRateCode);
+  const defaultRateName = isPastReservation
+    ? rateDefaults.pastRateName
+    : rateDefaults.futureRateName;
+
+  let chosenRateName: string | null = null;
+  let chosenRoomRateID: string | null = null;
+  let rateStrategy: string = 'none';
+  let usedDefaultRate = false;
+
+  if (rawRateCode) {
+    debug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
+      raw: rawRateCode, key: normalizedRateKey,
+    });
+    const match = findRateMatch(rates, roomTypeID, rawRateCode);
+    if (match.rate) {
+      chosenRateName = match.rate.ratePlanNamePublic;
+      chosenRoomRateID = match.rate.rateID;
+      rateStrategy = match.strategy;
+    }
+  }
+
+  if (!chosenRoomRateID && defaultRateName) {
+    const defaultMatch = findRateMatch(rates, roomTypeID, defaultRateName);
+    if (defaultMatch.rate) {
+      chosenRateName = defaultMatch.rate.ratePlanNamePublic;
+      chosenRoomRateID = defaultMatch.rate.rateID;
+      rateStrategy = `default-${bucket}:${defaultMatch.strategy}`;
+      usedDefaultRate = true;
+    }
+  }
+
+  debug('Migration', 'resolve', `Row ${rowIndex}: rate resolution → strategy=${rateStrategy}, name="${chosenRateName ?? '(none)'}", roomRateID=${chosenRoomRateID ?? '(none)'}`, {
+    rawRate: rawRateCode || '(blank)',
+    normalizedRate: normalizedRateKey,
+    roomTypeID,
+    bucket,
+    defaultRateName,
+    usedDefault: usedDefaultRate,
+    strategy: rateStrategy,
+    chosenRateName,
+    chosenRoomRateID,
+    availableRatesForRoomType: rates
+      .filter((r) => r.roomTypeID === roomTypeID)
+      .map((r) => ({ ratePlanNamePublic: r.ratePlanNamePublic, rateID: r.rateID }))
+      .slice(0, 10),
+  });
+
+  if (!chosenRoomRateID) {
+    warn('Migration', 'resolve', `Row ${rowIndex}: no rate resolvable for room type ${roomTypeID} (raw="${rawRateCode}", default="${defaultRateName}")`, {
+      rowIndex,
+      rawRate: rawRateCode,
+      normalizedRate: normalizedRateKey,
+      roomTypeID,
+      defaultRateName,
+      bucket,
+    });
+  }
+
+  // Build rooms/adults/children as JSON arrays (API requires array format).
+  //
+  // Target structure (form-urlencoded, values are JSON-stringified arrays):
+  //   rooms=[{"roomTypeID":"...","quantity":1,"roomRateID":"..."}]
+  //   adults=[{"roomTypeID":"...","quantity":1}]
+  //   children=[{"roomTypeID":"...","quantity":0}]
+  //
+  // Only `rooms` entries carry `roomRateID` (and only when a rate was resolved).
+  const roomsEntry: Record<string, unknown> = {
+    roomTypeID,
+    quantity: Number(roomCount) || 1,
+  };
+  if (chosenRoomRateID) {
+    roomsEntry.roomRateID = chosenRoomRateID;
+  }
+  const roomsArray = JSON.stringify([roomsEntry]);
+  const adultsArray = JSON.stringify([{ roomTypeID, quantity: Number(adult) || 1 }]);
+  const childrenArray = JSON.stringify([{ roomTypeID, quantity: Number(child) || 0 }]);
 
   // Build base payload
   const payload: Record<string, string> = {
@@ -116,26 +253,81 @@ function buildPayload(
     guestFirstName: firstName,
     guestLastName: lastName,
     guestEmail: email,
-    guestCountry: country.toUpperCase(),
+    guestCountry: countryResult.iso2,
     rooms: roomsArray,
     adults: adultsArray,
     children: childrenArray,
     paymentMethod,
-    sendEmailConfirmation: emailConfirmation === 'true' ? '1' : '0',
+    // Always send sendEmailConfirmation=false during migration so guests
+    // never receive a confirmation email for back-filled reservations.
+    sendEmailConfirmation: 'false',
   };
 
-  // Optional: source
-  const sourceCode = get('Source Code');
-  if (sourceCode) {
-    const sourceID = resolveSourceId(sources, sourceCode);
-    debug('Migration', 'resolve', `Row ${rowIndex}: source "${sourceCode}" → ${sourceID || '(not found)'}`, {
-      sourceCode, sourceID, availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+  // Source resolution:
+  //  1. If Excel value is filled → exact / normalized / contains match.
+  //  2. If still no match (or value is blank) → fall back to the configured
+  //     past or future default depending on the arrival date.
+  //  3. The default name is itself resolved through the same matcher so that
+  //     "FORMERPMS" / "Direct - Hotel" find the closest entry in this property.
+  const rawSourceCode = get('Source Code');
+  const normalizedSourceKey = normalizeSourceKey(rawSourceCode);
+
+  const defaultName = isPastReservation
+    ? sourceDefaults.pastSourceName
+    : sourceDefaults.futureSourceName;
+  const defaultBucket = bucket;
+
+  let chosenSourceName: string | null = null;
+  let chosenSourceID: string | null = null;
+  let strategyUsed: string = 'none';
+  let usedDefault = false;
+
+  if (rawSourceCode) {
+    debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
+      raw: rawSourceCode, key: normalizedSourceKey,
     });
-    if (sourceID) {
-      payload.sourceID = sourceID;
-    } else {
-      warn('Migration', 'resolve', `Row ${rowIndex}: source "${sourceCode}" not resolved — omitting`, { rowIndex, sourceCode });
+    const match = findSourceMatch(sources, rawSourceCode);
+    if (match.source) {
+      chosenSourceName = match.source.sourceName;
+      chosenSourceID = match.source.sourceID;
+      strategyUsed = match.strategy;
     }
+  }
+
+  if (!chosenSourceID) {
+    // Fall back to the configured default for this row's bucket.
+    const defaultMatch = findSourceMatch(sources, defaultName);
+    if (defaultMatch.source) {
+      chosenSourceName = defaultMatch.source.sourceName;
+      chosenSourceID = defaultMatch.source.sourceID;
+      strategyUsed = `default-${defaultBucket}:${defaultMatch.strategy}`;
+      usedDefault = true;
+    }
+  }
+
+  debug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${strategyUsed}, name="${chosenSourceName ?? '(none)'}", id=${chosenSourceID ?? '(none)'}`, {
+    rawSource: rawSourceCode || '(blank)',
+    normalizedSource: normalizedSourceKey,
+    arrival,
+    bucket: defaultBucket,
+    defaultName,
+    usedDefault,
+    strategy: strategyUsed,
+    chosenSourceName,
+    chosenSourceID,
+    availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+  });
+
+  if (chosenSourceID) {
+    payload.sourceID = chosenSourceID;
+  } else {
+    warn('Migration', 'resolve', `Row ${rowIndex}: no source resolvable (raw="${rawSourceCode}", default="${defaultName}") — omitting`, {
+      rowIndex,
+      rawSource: rawSourceCode,
+      normalizedSource: normalizedSourceKey,
+      defaultName,
+      bucket: defaultBucket,
+    });
   }
 
   // Optional: 3rd party code
@@ -144,13 +336,17 @@ function buildPayload(
     payload.thirdPartyIdentifier = thirdPartyCode;
   }
 
-  // Optional: gender
-  const gender = get('Gender');
-  if (gender) payload.guestGender = gender;
+  // Gender — always normalized to M / F / N/A; never raw Excel text
+  const rawGender = get('Gender');
+  const normalizedGender = normalizeGender(rawGender);
+  debug('Migration', 'normalize', `Row ${rowIndex}: gender "${rawGender}" → "${normalizedGender}"`, {
+    raw: rawGender, normalized: normalizedGender,
+  });
+  payload.guestGender = normalizedGender;
 
-  // Optional: zip
-  const zip = get('Zip');
-  if (zip) payload.guestZip = zip;
+  // guestZip is intentionally omitted from every payload — the API treats
+  // missing zip as "unknown" and we never want to back-fill it during
+  // migration. Any value in the Excel "Zip" column is ignored on purpose.
 
   // Optional: mobile
   const mobile = get('Mobile');
@@ -164,9 +360,7 @@ function buildPayload(
   const eta = get('ETA');
   if (eta) payload.estimatedArrivalTime = eta;
 
-  // Optional: rate code
-  const rateCode = get('Rate Code');
-  if (rateCode) payload.ratePlanNamePublic = rateCode;
+  // Rate was resolved earlier (roomRateID is embedded inside the rooms array).
 
   // Optional: custom field
   const customField = get('Custom Field');
@@ -199,6 +393,61 @@ function buildPayload(
     fieldCount: Object.keys(payload).length,
   });
 
+  // Consolidated per-row summary containing every raw → normalized value and
+  // the resolved IDs. This is the single entry to inspect when investigating
+  // a specific row.
+  info('Migration', 'row-summary', `Row ${rowIndex}: summary`, {
+    rowIndex,
+    bucket,
+    roomType: {
+      raw: roomTypeCode,
+      resolvedRoomTypeID: roomTypeID,
+    },
+    source: {
+      raw: rawSourceCode || '(blank)',
+      normalized: normalizedSourceKey,
+      chosenName: chosenSourceName,
+      chosenID: chosenSourceID,
+      usedDefault,
+      strategy: strategyUsed,
+    },
+    rate: {
+      raw: rawRateCode || '(blank)',
+      normalized: normalizedRateKey,
+      chosenName: chosenRateName,
+      resolvedRoomRateID: chosenRoomRateID,
+      usedDefault: usedDefaultRate,
+      strategy: rateStrategy,
+    },
+    gender: {
+      raw: rawGender,
+      normalized: normalizedGender,
+    },
+    country: {
+      raw: country,
+      normalized: countryResult.iso2,
+      resolved: countryResult.resolved,
+    },
+    payment: {
+      raw: rawPaymentMethod,
+      normalized: paymentMethod,
+    },
+    payloadSummary: {
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      guestCountry: payload.guestCountry,
+      guestGender: payload.guestGender,
+      guestEmail: payload.guestEmail,
+      paymentMethod: payload.paymentMethod,
+      sendEmailConfirmation: payload.sendEmailConfirmation,
+      sourceID: payload.sourceID ?? '(omitted)',
+      rooms: payload.rooms,
+      adults: payload.adults,
+      children: payload.children,
+      fieldCount: Object.keys(payload).length,
+    },
+  });
+
   return { payload, error: null };
 }
 
@@ -209,6 +458,7 @@ function buildPayload(
 export async function migrateReservations(
   file: File,
   onProgress: (progress: MigrationProgress) => void,
+  cancellation?: MigrationCancellation,
 ): Promise<MigrationProgress> {
   info('Migration', 'start', `Starting reservation migration from ${file.name}`);
 
@@ -227,15 +477,22 @@ export async function migrateReservations(
     mainApiUrl, propertyId, postUrl,
   });
 
-  // Load cached room types and sources for resolution
+  // Load cached room types, sources, and rates for resolution
   const roomCache = loadRoomDataCache(propertyId);
   const roomTypes = roomCache?.roomTypes ?? [];
   const sourcesCache = loadSourcesCache(propertyId);
   const sources = sourcesCache ?? [];
+  const sourceDefaults = loadSourceDefaults(propertyId);
+  const ratesCache = loadRatesCache(propertyId);
+  const rates = ratesCache ?? [];
+  const rateDefaults = loadRateDefaults(propertyId);
 
-  info('Migration', 'config', `Cached data: ${roomTypes.length} room types, ${sources.length} sources`, {
+  info('Migration', 'config', `Cached data: ${roomTypes.length} room types, ${sources.length} sources, ${rates.length} rate entries`, {
     roomTypeShortCodes: roomTypes.map((r) => r.roomTypeNameShort),
     sourceNames: sources.map((s) => s.sourceName),
+    sourceDefaults,
+    rateDefaults,
+    ratePlanNames: [...new Set(rates.map((r) => r.ratePlanNamePublic))],
   });
 
   if (roomTypes.length === 0) {
@@ -243,6 +500,9 @@ export async function migrateReservations(
   }
   if (sources.length === 0) {
     warn('Migration', 'config', 'No sources cached — source resolution may fail');
+  }
+  if (rates.length === 0) {
+    warn('Migration', 'config', 'No rates cached — rate resolution may fail, roomRateID will be omitted');
   }
 
   // Parse file
@@ -272,15 +532,28 @@ export async function migrateReservations(
     rows: migrationRows,
   };
 
-  onProgress({ ...progress, rows: [...progress.rows] });
+  const emitProgress = () => {
+    onProgress({ ...progress, rows: [...progress.rows] });
+  };
+  emitProgress();
 
-  // Process each row sequentially
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const mRow = migrationRows[i];
+  // Process a single row: build the payload, send it, update mRow + counters.
+  // This function is invoked from a worker pool and never throws.
+  const processRow = async (rowIndex: number): Promise<void> => {
+    const row = rows[rowIndex];
+    const mRow = migrationRows[rowIndex];
 
     // Build payload
-    const { payload, error: buildError } = buildPayload(row, mRow.rowNumber, propertyId, roomTypes, sources);
+    const { payload, error: buildError } = buildPayload(
+      row,
+      mRow.rowNumber,
+      propertyId,
+      roomTypes,
+      sources,
+      sourceDefaults,
+      rates,
+      rateDefaults,
+    );
 
     if (buildError || !payload) {
       mRow.status = 'skipped';
@@ -288,13 +561,12 @@ export async function migrateReservations(
       progress.completed++;
       progress.failed++;
       debug('Migration', 'skip', `Row ${mRow.rowNumber} skipped: ${mRow.message}`);
-      onProgress({ ...progress, rows: [...progress.rows] });
-      continue;
+      return;
     }
 
     mRow.payload = payload;
     mRow.status = 'sending';
-    onProgress({ ...progress, rows: [...progress.rows] });
+    emitProgress();
 
     try {
       debug('Migration', 'send', `Sending row ${mRow.rowNumber}`, {
@@ -340,9 +612,94 @@ export async function migrateReservations(
     }
 
     progress.completed++;
-    onProgress({ ...progress, rows: [...progress.rows] });
+    emitProgress();
+  };
+
+  // Run a batch with bounded concurrency. Workers cooperatively pull row
+  // indices from a shared cursor; if the user cancels mid-batch, workers stop
+  // picking up new rows but already in-flight requests are allowed to settle.
+  const runBatch = async (indices: number[]): Promise<void> => {
+    let cursor = 0;
+    const workerCount = Math.min(BATCH_CONCURRENCY, indices.length);
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < workerCount; w++) {
+      workers.push((async () => {
+        while (cursor < indices.length) {
+          if (cancellation?.cancelled) return;
+          const next = cursor++;
+          await processRow(indices[next]);
+        }
+      })());
+    }
+    await Promise.all(workers);
+  };
+
+  // Walk the rows in sequential batches. Cancellation is checked between
+  // batches and inside each worker.
+  for (let batchStart = 0; batchStart < rows.length; batchStart += BATCH_SIZE) {
+    if (cancellation?.cancelled) {
+      progress.stopped = true;
+      info('Migration', 'cancel', `Migration stopped by user before row ${migrationRows[batchStart]?.rowNumber ?? batchStart + 2}`, {
+        completed: progress.completed,
+        total: progress.total,
+      });
+      break;
+    }
+    const batchEnd = Math.min(batchStart + BATCH_SIZE, rows.length);
+    const batchIndices: number[] = [];
+    for (let i = batchStart; i < batchEnd; i++) batchIndices.push(i);
+
+    debug('Migration', 'batch', `Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}: rows ${batchIndices[0] + 2}–${batchIndices[batchIndices.length - 1] + 2} (concurrency ${BATCH_CONCURRENCY})`, {
+      batchSize: batchIndices.length,
+      concurrency: BATCH_CONCURRENCY,
+      completedSoFar: progress.completed,
+      total: progress.total,
+    });
+
+    await runBatch(batchIndices);
+    emitProgress();
+
+    if (cancellation?.cancelled) {
+      progress.stopped = true;
+      info('Migration', 'cancel', `Migration stopped by user after batch ending at row ${migrationRows[batchEnd - 1]?.rowNumber ?? batchEnd + 1}`, {
+        completed: progress.completed,
+        total: progress.total,
+      });
+      break;
+    }
   }
 
-  info('Migration', 'complete', `Migration done: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`);
+  // Final summary log — always emitted, even when 0 rows were processed.
+  // Displayed at the top of the Migration tab (newest-first ordering).
+  const failedRows = migrationRows
+    .filter((r) => r.status === 'failed' || r.status === 'skipped')
+    .map((r) => ({
+      rowNumber: r.rowNumber,
+      status: r.status,
+      reason: r.message,
+    }));
+
+  const summaryHeadline = progress.stopped
+    ? `Migration STOPPED by user: ${progress.succeeded} succeeded, ${progress.failed} failed, ${progress.total - progress.completed} not processed (out of ${progress.total})`
+    : `Migration summary: ${progress.succeeded} succeeded, ${progress.failed} failed out of ${progress.total}`;
+
+  info(
+    'Migration',
+    'summary',
+    summaryHeadline,
+    {
+      total: progress.total,
+      completed: progress.completed,
+      succeeded: progress.succeeded,
+      failed: progress.failed,
+      stopped: !!progress.stopped,
+      notProcessed: progress.total - progress.completed,
+      failedRowNumbers: failedRows.map((r) => r.rowNumber),
+      failedRows,
+    },
+  );
+
+  info('Migration', 'complete', summaryHeadline);
+  emitProgress();
   return progress;
 }

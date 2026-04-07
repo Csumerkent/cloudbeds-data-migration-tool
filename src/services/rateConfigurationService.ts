@@ -1,4 +1,5 @@
 import { loadApiConfig } from './apiConfigurationService';
+import { normalizeRateKey } from './normalizationHelpers';
 import { debug, info, warn, error as logError } from './debugLogger';
 
 // --- Types ---
@@ -201,4 +202,128 @@ export function resolveRatePlanId(rates: CloudbedsRateEntry[], name: string): st
   const lower = name.trim().toLowerCase();
   const match = rates.find((r) => r.ratePlanNamePublic.trim().toLowerCase() === lower);
   return match ? match.ratePlanID : '';
+}
+
+// --- Rate defaults (past / future), property-scoped ---
+
+export interface RateDefaults {
+  pastRateName: string;
+  futureRateName: string;
+}
+
+export const DEFAULT_PAST_RATE_NAME = 'FORMERPMS';
+export const DEFAULT_FUTURE_RATE_NAME = 'Walkin';
+
+function rateDefaultsKey(propertyId: string): string {
+  return `cloudbeds-rate-defaults-${propertyId}`;
+}
+
+export function loadRateDefaults(propertyId: string): RateDefaults {
+  const raw = localStorage.getItem(rateDefaultsKey(propertyId));
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          pastRateName:
+            typeof parsed.pastRateName === 'string' && parsed.pastRateName.trim()
+              ? parsed.pastRateName
+              : DEFAULT_PAST_RATE_NAME,
+          futureRateName:
+            typeof parsed.futureRateName === 'string' && parsed.futureRateName.trim()
+              ? parsed.futureRateName
+              : DEFAULT_FUTURE_RATE_NAME,
+        };
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return {
+    pastRateName: DEFAULT_PAST_RATE_NAME,
+    futureRateName: DEFAULT_FUTURE_RATE_NAME,
+  };
+}
+
+export function saveRateDefaults(propertyId: string, defaults: RateDefaults): void {
+  localStorage.setItem(rateDefaultsKey(propertyId), JSON.stringify(defaults));
+}
+
+// --- Rich rate matching: scoped to a room type ---
+
+export type RateMatchStrategy =
+  | 'exact'        // case-insensitive exact ratePlanNamePublic match
+  | 'normalized'   // normalized-key exact match
+  | 'contains'     // substring/similarity match on normalized keys
+  | 'none';
+
+export interface RateMatchResult {
+  rate: CloudbedsRateEntry | null;
+  strategy: RateMatchStrategy;
+}
+
+/**
+ * Find the best rate entry for a given room type using a raw rate-name input.
+ * Only entries whose `roomTypeID` equals the supplied roomTypeID are considered.
+ *
+ * Matching order:
+ *   1. case-insensitive exact match on ratePlanNamePublic
+ *   2. normalized-key exact match (via normalizeRateKey)
+ *   3. contains/similarity match on normalized keys (either direction)
+ *
+ * Ties in the contains step are broken by picking the entry whose normalized
+ * rate-plan name is closest in length to the input key (the "first closest
+ * valid match").
+ */
+export function findRateMatch(
+  rates: CloudbedsRateEntry[],
+  roomTypeID: string,
+  rawInput: string,
+): RateMatchResult {
+  if (!Array.isArray(rates) || rates.length === 0) {
+    return { rate: null, strategy: 'none' };
+  }
+  if (!roomTypeID) {
+    return { rate: null, strategy: 'none' };
+  }
+  const trimmed = (rawInput ?? '').trim();
+  if (!trimmed) {
+    return { rate: null, strategy: 'none' };
+  }
+
+  const scoped = rates.filter((r) => r.roomTypeID === roomTypeID);
+  if (scoped.length === 0) {
+    return { rate: null, strategy: 'none' };
+  }
+
+  // 1. exact match
+  const lower = trimmed.toLowerCase();
+  const exact = scoped.find((r) => r.ratePlanNamePublic.trim().toLowerCase() === lower);
+  if (exact) return { rate: exact, strategy: 'exact' };
+
+  // 2. normalized exact
+  const inputKey = normalizeRateKey(trimmed);
+  if (!inputKey) return { rate: null, strategy: 'none' };
+  const normalizedExact = scoped.find((r) => normalizeRateKey(r.ratePlanNamePublic) === inputKey);
+  if (normalizedExact) return { rate: normalizedExact, strategy: 'normalized' };
+
+  // 3. contains / similarity
+  const candidates: CloudbedsRateEntry[] = [];
+  for (const r of scoped) {
+    const rKey = normalizeRateKey(r.ratePlanNamePublic);
+    if (!rKey) continue;
+    if (rKey.includes(inputKey) || inputKey.includes(rKey)) {
+      candidates.push(r);
+    }
+  }
+  if (candidates.length > 0) {
+    // Closest valid match = shortest rate plan name (favors the most
+    // specific brand variant), stable for ties.
+    candidates.sort(
+      (a, b) => a.ratePlanNamePublic.length - b.ratePlanNamePublic.length,
+    );
+    return { rate: candidates[0], strategy: 'contains' };
+  }
+
+  return { rate: null, strategy: 'none' };
 }

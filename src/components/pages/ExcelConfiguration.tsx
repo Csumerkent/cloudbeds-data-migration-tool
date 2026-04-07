@@ -8,6 +8,7 @@ import {
 import {
   migrateReservations,
   MigrationProgress,
+  MigrationCancellation,
 } from '../../services/reservationMigrationService';
 import { info, debug } from '../../services/debugLogger';
 import './pages.css';
@@ -22,6 +23,9 @@ function ExcelConfiguration() {
   // Migration state
   const [migrating, setMigrating] = useState(false);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
+  // Mutable cancellation handle shared with the migration loop. The Stop
+  // button flips `cancelled = true`; the loop checks it between rows / batches.
+  const cancellationRef = useRef<MigrationCancellation>({ cancelled: false });
 
   // Profiles state
   const [profFile, setProfFile] = useState<File | null>(null);
@@ -38,7 +42,10 @@ function ExcelConfiguration() {
     const file = e.target.files?.[0] ?? null;
     setResFile(file);
     setResSummary(null);
+    // Selecting a new file is one of the only two events that resets results
+    // (the other is starting a brand new migration).
     setMigrationProgress(null);
+    cancellationRef.current = { cancelled: false };
     if (file) {
       info('Migration', 'upload', `File selected: ${file.name}`, { fileName: file.name, size: file.size });
     }
@@ -65,19 +72,45 @@ function ExcelConfiguration() {
 
   const handleMigrate = async () => {
     if (!resFile) return;
+    // Starting a new migration is the other event (besides new file upload)
+    // that resets the results display. A fresh cancellation handle is created
+    // so a previous Stop click can't pre-cancel this run.
+    cancellationRef.current = { cancelled: false };
+    setMigrationProgress(null);
     setMigrating(true);
     info('Migration', 'start', `Migration initiated for ${resFile.name}`);
     try {
-      const result = await migrateReservations(resFile, (p) => {
-        setMigrationProgress({ ...p });
-      });
+      const result = await migrateReservations(
+        resFile,
+        (p) => {
+          setMigrationProgress({ ...p });
+        },
+        cancellationRef.current,
+      );
       setMigrationProgress(result);
-      info('Migration', 'summary', `Migration finished: ${result.succeeded} succeeded, ${result.failed} failed out of ${result.total}`, {
-        total: result.total, succeeded: result.succeeded, failed: result.failed,
-      });
+      info(
+        'Migration',
+        'summary',
+        result.stopped
+          ? `Migration stopped: ${result.succeeded} succeeded, ${result.failed} failed, ${result.total - result.completed} not processed`
+          : `Migration finished: ${result.succeeded} succeeded, ${result.failed} failed out of ${result.total}`,
+        {
+          total: result.total,
+          completed: result.completed,
+          succeeded: result.succeeded,
+          failed: result.failed,
+          stopped: !!result.stopped,
+        },
+      );
     } finally {
       setMigrating(false);
     }
+  };
+
+  const handleStopMigration = () => {
+    if (!migrating) return;
+    cancellationRef.current.cancelled = true;
+    info('Migration', 'cancel', 'Stop requested by user — finishing in-flight requests then halting');
   };
 
   // Can migrate only after validation passes with >0 valid rows
@@ -207,14 +240,22 @@ function ExcelConfiguration() {
               </div>
             )}
 
-            {/* Migrate button */}
-            <div style={{ marginTop: 12 }}>
+            {/* Migrate / Stop buttons */}
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
               <button
                 className="btn btn-primary"
                 onClick={handleMigrate}
                 disabled={!canMigrate}
               >
                 {migrating ? 'Migrating...' : 'Migrate'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={handleStopMigration}
+                disabled={!migrating || cancellationRef.current.cancelled}
+                title="Stop processing further rows. In-flight requests will finish."
+              >
+                {cancellationRef.current.cancelled ? 'Stopping...' : 'Stop'}
               </button>
               {resSummary.invalidRows > 0 && resSummary.validRows > 0 && (
                 <span style={{ marginLeft: 10, fontSize: '0.8rem', color: '#666' }}>
@@ -243,8 +284,17 @@ function ExcelConfiguration() {
             </div>
             <div className="migration-progress-text">
               {migrationProgress.completed} / {migrationProgress.total} rows processed
-              {migrationProgress.completed === migrationProgress.total && ' — done'}
+              {migrationProgress.stopped
+                ? ' — stopped by user'
+                : migrationProgress.completed === migrationProgress.total
+                  ? ' — done'
+                  : ''}
             </div>
+            {migrationProgress.stopped && (
+              <div className="status-area status-area--idle" style={{ marginTop: 8 }}>
+                Migration was stopped. {migrationProgress.total - migrationProgress.completed} row(s) were not processed.
+              </div>
+            )}
 
             {/* Summary counts */}
             <dl className="summary-grid" style={{ marginTop: 8 }}>
