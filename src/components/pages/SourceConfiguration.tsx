@@ -3,6 +3,10 @@ import {
   fetchSources,
   resolveSourceId,
   loadSourcesCache,
+  loadSourceDefaults,
+  saveSourceDefaults,
+  DEFAULT_PAST_SOURCE_NAME,
+  DEFAULT_FUTURE_SOURCE_NAME,
   type CloudbedsSource,
 } from '../../services/sourceConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
@@ -12,10 +16,20 @@ import './pages.css';
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
 
 function SourceConfiguration() {
-  const [oldSourceName, setOldSourceName] = useState('FORMERPMS');
+  const [oldSourceName, setOldSourceName] = useState(DEFAULT_PAST_SOURCE_NAME);
   const [oldSourceId, setOldSourceId] = useState('');
-  const [futureSourceName, setFutureSourceName] = useState('Direct - Hotel');
+  const [futureSourceName, setFutureSourceName] = useState(DEFAULT_FUTURE_SOURCE_NAME);
   const [futureSourceId, setFutureSourceId] = useState('');
+
+  // Persist default source names so the migration flow can read them.
+  const persistDefaults = (pastName: string, futureName: string) => {
+    const config = loadApiConfig();
+    if (!config) return;
+    saveSourceDefaults(config.propertyId, {
+      pastSourceName: pastName,
+      futureSourceName: futureName,
+    });
+  };
   const [allSources, setAllSources] = useState<CloudbedsSource[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
@@ -62,6 +76,12 @@ function SourceConfiguration() {
   useEffect(() => {
     const config = loadApiConfig();
     if (!config) return;
+
+    // Load persisted default source names (or fall back to constants)
+    const persistedDefaults = loadSourceDefaults(config.propertyId);
+    setOldSourceName(persistedDefaults.pastSourceName);
+    setFutureSourceName(persistedDefaults.futureSourceName);
+
     const cached = loadSourcesCache(config.propertyId);
     if (cached && cached.length > 0) {
       debug('SourceConfig', 'cache', `Loaded ${cached.length} sources from cache`, {
@@ -69,8 +89,8 @@ function SourceConfiguration() {
       });
       const cachedRows = getSafeSourceRows(cached, 'cache-load');
       setAllSources(cachedRows);
-      setOldSourceId(resolveAndLog(cachedRows, 'FORMERPMS', 'Old Reservations'));
-      setFutureSourceId(resolveAndLog(cachedRows, 'Direct - Hotel', 'Future Reservations'));
+      setOldSourceId(resolveAndLog(cachedRows, persistedDefaults.pastSourceName, 'Old Reservations'));
+      setFutureSourceId(resolveAndLog(cachedRows, persistedDefaults.futureSourceName, 'Future Reservations'));
       setLoadStatus('success');
       setStatusMessage(`Loaded ${cachedRows.length} sources from cache.`);
     }
@@ -106,12 +126,11 @@ function SourceConfiguration() {
     });
 
     setAllSources(parsedRows);
-    const oldId = resolveAndLog(parsedRows, 'FORMERPMS', 'Old Reservations');
-    const futureId = resolveAndLog(parsedRows, 'Direct - Hotel', 'Future Reservations');
-    setOldSourceName('FORMERPMS');
-    setFutureSourceName('Direct - Hotel');
+    const oldId = resolveAndLog(parsedRows, oldSourceName, 'Old Reservations');
+    const futureId = resolveAndLog(parsedRows, futureSourceName, 'Future Reservations');
     setOldSourceId(oldId);
     setFutureSourceId(futureId);
+    persistDefaults(oldSourceName, futureSourceName);
     setLoadStatus('success');
     setStatusMessage(result.message);
 
@@ -164,7 +183,11 @@ function SourceConfiguration() {
             <input
               type="text"
               value={oldSourceName}
-              onChange={(e) => setOldSourceName(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setOldSourceName(next);
+                persistDefaults(next, futureSourceName);
+              }}
             />
           </div>
           <div className="config-field">
@@ -182,7 +205,11 @@ function SourceConfiguration() {
             <input
               type="text"
               value={futureSourceName}
-              onChange={(e) => setFutureSourceName(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setFutureSourceName(next);
+                persistDefaults(oldSourceName, next);
+              }}
             />
           </div>
           <div className="config-field">

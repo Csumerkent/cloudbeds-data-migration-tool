@@ -1,7 +1,13 @@
 import * as XLSX from 'xlsx';
 import { loadApiConfig } from './apiConfigurationService';
 import { loadRoomDataCache, resolveRoomTypeId, CloudbedsRoomType } from './roomConfigurationService';
-import { loadSourcesCache, findSourceMatch, CloudbedsSource } from './sourceConfigurationService';
+import {
+  loadSourcesCache,
+  findSourceMatch,
+  loadSourceDefaults,
+  CloudbedsSource,
+  SourceDefaults,
+} from './sourceConfigurationService';
 import { normalizeGender, normalizeCountry, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
 import { info, debug, warn, error as logError } from './debugLogger';
 
@@ -67,6 +73,7 @@ function buildPayload(
   propertyId: string,
   roomTypes: CloudbedsRoomType[],
   sources: CloudbedsSource[],
+  sourceDefaults: SourceDefaults,
 ): { payload: Record<string, string> | null; error: string | null } {
   const get = (header: string): string => (row[header] ?? '').trim();
 
@@ -140,32 +147,75 @@ function buildPayload(
     sendEmailConfirmation: emailConfirmation === 'true' ? '1' : '0',
   };
 
-  // Optional: source — normalize the Excel value, then resolve via
-  // exact → normalized → contains/similarity matching.
+  // Source resolution:
+  //  1. If Excel value is filled → exact / normalized / contains match.
+  //  2. If still no match (or value is blank) → fall back to the configured
+  //     past or future default depending on the arrival date.
+  //  3. The default name is itself resolved through the same matcher so that
+  //     "FORMERPMS" / "Direct - Hotel" find the closest entry in this property.
   const rawSourceCode = get('Source Code');
   const normalizedSourceKey = normalizeSourceKey(rawSourceCode);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const arrivalDate = new Date(arrival);
+  const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
+  const defaultName = isPastReservation
+    ? sourceDefaults.pastSourceName
+    : sourceDefaults.futureSourceName;
+  const defaultBucket = isPastReservation ? 'past' : 'future';
+
+  let chosenSourceName: string | null = null;
+  let chosenSourceID: string | null = null;
+  let strategyUsed: string = 'none';
+  let usedDefault = false;
+
   if (rawSourceCode) {
     debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
       raw: rawSourceCode, key: normalizedSourceKey,
     });
     const match = findSourceMatch(sources, rawSourceCode);
-    debug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${match.strategy}, name="${match.source?.sourceName ?? '(none)'}", id=${match.source?.sourceID ?? '(none)'}`, {
+    if (match.source) {
+      chosenSourceName = match.source.sourceName;
+      chosenSourceID = match.source.sourceID;
+      strategyUsed = match.strategy;
+    }
+  }
+
+  if (!chosenSourceID) {
+    // Fall back to the configured default for this row's bucket.
+    const defaultMatch = findSourceMatch(sources, defaultName);
+    if (defaultMatch.source) {
+      chosenSourceName = defaultMatch.source.sourceName;
+      chosenSourceID = defaultMatch.source.sourceID;
+      strategyUsed = `default-${defaultBucket}:${defaultMatch.strategy}`;
+      usedDefault = true;
+    }
+  }
+
+  debug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${strategyUsed}, name="${chosenSourceName ?? '(none)'}", id=${chosenSourceID ?? '(none)'}`, {
+    rawSource: rawSourceCode || '(blank)',
+    normalizedSource: normalizedSourceKey,
+    arrival,
+    bucket: defaultBucket,
+    defaultName,
+    usedDefault,
+    strategy: strategyUsed,
+    chosenSourceName,
+    chosenSourceID,
+    availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+  });
+
+  if (chosenSourceID) {
+    payload.sourceID = chosenSourceID;
+  } else {
+    warn('Migration', 'resolve', `Row ${rowIndex}: no source resolvable (raw="${rawSourceCode}", default="${defaultName}") — omitting`, {
+      rowIndex,
       rawSource: rawSourceCode,
       normalizedSource: normalizedSourceKey,
-      strategy: match.strategy,
-      chosenSourceName: match.source?.sourceName ?? null,
-      chosenSourceID: match.source?.sourceID ?? null,
-      availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+      defaultName,
+      bucket: defaultBucket,
     });
-    if (match.source) {
-      payload.sourceID = match.source.sourceID;
-    } else {
-      warn('Migration', 'resolve', `Row ${rowIndex}: source "${rawSourceCode}" not resolved — omitting`, {
-        rowIndex,
-        rawSource: rawSourceCode,
-        normalizedSource: normalizedSourceKey,
-      });
-    }
   }
 
   // Optional: 3rd party code
@@ -272,10 +322,12 @@ export async function migrateReservations(
   const roomTypes = roomCache?.roomTypes ?? [];
   const sourcesCache = loadSourcesCache(propertyId);
   const sources = sourcesCache ?? [];
+  const sourceDefaults = loadSourceDefaults(propertyId);
 
   info('Migration', 'config', `Cached data: ${roomTypes.length} room types, ${sources.length} sources`, {
     roomTypeShortCodes: roomTypes.map((r) => r.roomTypeNameShort),
     sourceNames: sources.map((s) => s.sourceName),
+    sourceDefaults,
   });
 
   if (roomTypes.length === 0) {
@@ -320,7 +372,7 @@ export async function migrateReservations(
     const mRow = migrationRows[i];
 
     // Build payload
-    const { payload, error: buildError } = buildPayload(row, mRow.rowNumber, propertyId, roomTypes, sources);
+    const { payload, error: buildError } = buildPayload(row, mRow.rowNumber, propertyId, roomTypes, sources, sourceDefaults);
 
     if (buildError || !payload) {
       mRow.status = 'skipped';

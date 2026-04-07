@@ -39,6 +39,51 @@ export function loadSourcesCache(propertyId: string): CloudbedsSource[] | null {
   }
 }
 
+// --- Source defaults (past / future), property-scoped ---
+
+export interface SourceDefaults {
+  pastSourceName: string;
+  futureSourceName: string;
+}
+
+export const DEFAULT_PAST_SOURCE_NAME = 'FORMERPMS';
+export const DEFAULT_FUTURE_SOURCE_NAME = 'Direct - Hotel';
+
+function sourceDefaultsKey(propertyId: string): string {
+  return `cloudbeds-source-defaults-${propertyId}`;
+}
+
+export function loadSourceDefaults(propertyId: string): SourceDefaults {
+  const raw = localStorage.getItem(sourceDefaultsKey(propertyId));
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          pastSourceName:
+            typeof parsed.pastSourceName === 'string' && parsed.pastSourceName.trim()
+              ? parsed.pastSourceName
+              : DEFAULT_PAST_SOURCE_NAME,
+          futureSourceName:
+            typeof parsed.futureSourceName === 'string' && parsed.futureSourceName.trim()
+              ? parsed.futureSourceName
+              : DEFAULT_FUTURE_SOURCE_NAME,
+        };
+      }
+    } catch {
+      // fall through to defaults
+    }
+  }
+  return {
+    pastSourceName: DEFAULT_PAST_SOURCE_NAME,
+    futureSourceName: DEFAULT_FUTURE_SOURCE_NAME,
+  };
+}
+
+export function saveSourceDefaults(propertyId: string, defaults: SourceDefaults): void {
+  localStorage.setItem(sourceDefaultsKey(propertyId), JSON.stringify(defaults));
+}
+
 // --- Fetch sources from Cloudbeds ---
 
 export async function fetchSources(): Promise<FetchSourcesResult> {
