@@ -117,7 +117,6 @@ function buildPayload(
   const adult = get('Adult *') || '1';
   const child = get('Child') || '0';
   const roomCount = get('Room Count') || '1';
-  const emailConfirmation = get('Email Confirmation') || 'false';
 
   // Normalize payment method (credit / ebanking / cash)
   const rawPaymentMethod = get('Payment Method *');
@@ -242,7 +241,9 @@ function buildPayload(
     adults: adultsArray,
     children: childrenArray,
     paymentMethod,
-    sendEmailConfirmation: emailConfirmation === 'true' ? '1' : '0',
+    // Always send sendEmailConfirmation=false during migration so guests
+    // never receive a confirmation email for back-filled reservations.
+    sendEmailConfirmation: 'false',
   };
 
   // Source resolution:
@@ -326,9 +327,9 @@ function buildPayload(
   });
   payload.guestGender = normalizedGender;
 
-  // Optional: zip
-  const zip = get('Zip');
-  if (zip) payload.guestZip = zip;
+  // guestZip is intentionally omitted from every payload — the API treats
+  // missing zip as "unknown" and we never want to back-fill it during
+  // migration. Any value in the Excel "Zip" column is ignored on purpose.
 
   // Optional: mobile
   const mobile = get('Mobile');
