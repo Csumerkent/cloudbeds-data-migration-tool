@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import { loadApiConfig } from './apiConfigurationService';
 import { loadRoomDataCache, resolveRoomTypeId, CloudbedsRoomType } from './roomConfigurationService';
-import { loadSourcesCache, resolveSourceId, CloudbedsSource } from './sourceConfigurationService';
+import { loadSourcesCache, findSourceMatch, CloudbedsSource } from './sourceConfigurationService';
 import { normalizeGender, normalizeCountry, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
 import { info, debug, warn, error as logError } from './debugLogger';
 
@@ -140,21 +140,31 @@ function buildPayload(
     sendEmailConfirmation: emailConfirmation === 'true' ? '1' : '0',
   };
 
-  // Optional: source — normalize the Excel value before matching
+  // Optional: source — normalize the Excel value, then resolve via
+  // exact → normalized → contains/similarity matching.
   const rawSourceCode = get('Source Code');
   const normalizedSourceKey = normalizeSourceKey(rawSourceCode);
   if (rawSourceCode) {
     debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
       raw: rawSourceCode, key: normalizedSourceKey,
     });
-    const sourceID = resolveSourceId(sources, rawSourceCode);
-    debug('Migration', 'resolve', `Row ${rowIndex}: source "${rawSourceCode}" → ${sourceID || '(not found)'}`, {
-      sourceCode: rawSourceCode, sourceKey: normalizedSourceKey, sourceID, availableSources: sources.map((s) => s.sourceName).slice(0, 10),
+    const match = findSourceMatch(sources, rawSourceCode);
+    debug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${match.strategy}, name="${match.source?.sourceName ?? '(none)'}", id=${match.source?.sourceID ?? '(none)'}`, {
+      rawSource: rawSourceCode,
+      normalizedSource: normalizedSourceKey,
+      strategy: match.strategy,
+      chosenSourceName: match.source?.sourceName ?? null,
+      chosenSourceID: match.source?.sourceID ?? null,
+      availableSources: sources.map((s) => s.sourceName).slice(0, 10),
     });
-    if (sourceID) {
-      payload.sourceID = sourceID;
+    if (match.source) {
+      payload.sourceID = match.source.sourceID;
     } else {
-      warn('Migration', 'resolve', `Row ${rowIndex}: source "${rawSourceCode}" not resolved — omitting`, { rowIndex, sourceCode: rawSourceCode, sourceKey: normalizedSourceKey });
+      warn('Migration', 'resolve', `Row ${rowIndex}: source "${rawSourceCode}" not resolved — omitting`, {
+        rowIndex,
+        rawSource: rawSourceCode,
+        normalizedSource: normalizedSourceKey,
+      });
     }
   }
 

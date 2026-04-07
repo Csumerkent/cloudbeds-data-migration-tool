@@ -1,4 +1,5 @@
 import { loadApiConfig } from './apiConfigurationService';
+import { normalizeSourceKey } from './normalizationHelpers';
 import { debug, info, error as logError } from './debugLogger';
 
 // --- Types ---
@@ -170,4 +171,77 @@ export function resolveSourceId(sources: CloudbedsSource[], name: string): strin
   const lower = name.trim().toLowerCase();
   const match = sources.find((s) => typeof s?.sourceName === 'string' && s.sourceName.trim().toLowerCase() === lower);
   return match ? match.sourceID : '';
+}
+
+// --- Rich source matching with strategy info ---
+
+export type SourceMatchStrategy =
+  | 'exact'        // case-insensitive exact match on name
+  | 'normalized'   // normalized-key exact match
+  | 'contains'     // substring/similarity match on normalized keys
+  | 'none';
+
+export interface SourceMatchResult {
+  source: CloudbedsSource | null;
+  strategy: SourceMatchStrategy;
+}
+
+/**
+ * Find the best matching source for a raw Excel value.
+ *
+ * Matching order:
+ *   1. case-insensitive exact match on `sourceName`
+ *   2. normalized-key exact match (via `normalizeSourceKey`)
+ *   3. contains/similarity match on normalized keys (input ↔ source key
+ *      either way); when multiple candidates match, the first closest valid
+ *      one is returned (closest = shortest source name, which favors the most
+ *      specific brand variant rather than a long compound name).
+ */
+export function findSourceMatch(sources: CloudbedsSource[], rawInput: string): SourceMatchResult {
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return { source: null, strategy: 'none' };
+  }
+  const trimmed = (rawInput ?? '').trim();
+  if (!trimmed) {
+    return { source: null, strategy: 'none' };
+  }
+
+  // 1. case-insensitive exact match on name
+  const lower = trimmed.toLowerCase();
+  const exact = sources.find(
+    (s) => typeof s?.sourceName === 'string' && s.sourceName.trim().toLowerCase() === lower,
+  );
+  if (exact) {
+    return { source: exact, strategy: 'exact' };
+  }
+
+  // 2. normalized-key exact match
+  const inputKey = normalizeSourceKey(trimmed);
+  if (inputKey) {
+    const normalizedExact = sources.find(
+      (s) => typeof s?.sourceName === 'string' && normalizeSourceKey(s.sourceName) === inputKey,
+    );
+    if (normalizedExact) {
+      return { source: normalizedExact, strategy: 'normalized' };
+    }
+
+    // 3. contains/similarity match on normalized keys (in either direction)
+    const candidates: CloudbedsSource[] = [];
+    for (const s of sources) {
+      if (typeof s?.sourceName !== 'string') continue;
+      const sKey = normalizeSourceKey(s.sourceName);
+      if (!sKey) continue;
+      if (sKey.includes(inputKey) || inputKey.includes(sKey)) {
+        candidates.push(s);
+      }
+    }
+    if (candidates.length > 0) {
+      // First closest valid match: shortest source name first, preserving
+      // input order for ties so the first occurrence wins.
+      candidates.sort((a, b) => a.sourceName.length - b.sourceName.length);
+      return { source: candidates[0], strategy: 'contains' };
+    }
+  }
+
+  return { source: null, strategy: 'none' };
 }
