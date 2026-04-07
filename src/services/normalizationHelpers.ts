@@ -15,13 +15,13 @@ export type NormalizedGender = 'M' | 'F' | 'N/A';
 const MALE_TOKENS = new Set([
   'm', 'male', 'man', 'boy',
   // Turkish
-  'e', 'erkek', 'bay',
+  'e', 'erkek',
 ]);
 
 const FEMALE_TOKENS = new Set([
   'f', 'female', 'woman', 'girl',
   // Turkish
-  'k', 'kadin', 'kadın', 'bayan', 'kiz', 'kız',
+  'kadin', 'kadın', 'bayan', 'kiz', 'kız',
 ]);
 
 /**
