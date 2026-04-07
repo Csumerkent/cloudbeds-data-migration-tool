@@ -4,6 +4,10 @@ import {
   resolveRatePlanId,
   loadRatesCache,
   isValidDate,
+  loadRateDefaults,
+  saveRateDefaults,
+  DEFAULT_PAST_RATE_NAME,
+  DEFAULT_FUTURE_RATE_NAME,
   type CloudbedsRateEntry,
 } from '../../services/rateConfigurationService';
 import { loadApiConfig } from '../../services/apiConfigurationService';
@@ -13,15 +17,25 @@ import './pages.css';
 type LoadStatus = 'idle' | 'loading' | 'success' | 'error';
 
 function RateConfiguration() {
-  const [oldRateName, setOldRateName] = useState('FORMERPMS');
+  const [oldRateName, setOldRateName] = useState(DEFAULT_PAST_RATE_NAME);
   const [oldRatePlanId, setOldRatePlanId] = useState('');
-  const [futureRateName, setFutureRateName] = useState('Walkin');
+  const [futureRateName, setFutureRateName] = useState(DEFAULT_FUTURE_RATE_NAME);
   const [futureRatePlanId, setFutureRatePlanId] = useState('');
   const [allRates, setAllRates] = useState<CloudbedsRateEntry[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
   const [startDate, setStartDate] = useState('2021-01-01');
   const [endDate, setEndDate] = useState('2027-01-01');
+
+  // Persist default rate plan names so the migration flow can read them.
+  const persistDefaults = (pastName: string, futureName: string) => {
+    const config = loadApiConfig();
+    if (!config) return;
+    saveRateDefaults(config.propertyId, {
+      pastRateName: pastName,
+      futureRateName: futureName,
+    });
+  };
 
   const resolveAndLog = (rates: CloudbedsRateEntry[], name: string, label: string): string => {
     const uniqueNames = [...new Set(rates.map((r) => r.ratePlanNamePublic))];
@@ -50,14 +64,20 @@ function RateConfiguration() {
   useEffect(() => {
     const config = loadApiConfig();
     if (!config) return;
+
+    // Load persisted default rate plan names (or fall back to constants)
+    const persistedDefaults = loadRateDefaults(config.propertyId);
+    setOldRateName(persistedDefaults.pastRateName);
+    setFutureRateName(persistedDefaults.futureRateName);
+
     const cached = loadRatesCache(config.propertyId);
     if (cached && cached.length > 0) {
       debug('RateConfig', 'cache', `Loaded ${cached.length} rate entries from cache`, {
         first5: cached.slice(0, 5).map((r) => ({ ratePlanNamePublic: r.ratePlanNamePublic, ratePlanID: r.ratePlanID, roomTypeID: r.roomTypeID, rateID: r.rateID })),
       });
       setAllRates(cached);
-      setOldRatePlanId(resolveRatePlanId(cached, 'FORMERPMS'));
-      setFutureRatePlanId(resolveRatePlanId(cached, 'Walkin'));
+      setOldRatePlanId(resolveRatePlanId(cached, persistedDefaults.pastRateName));
+      setFutureRatePlanId(resolveRatePlanId(cached, persistedDefaults.futureRateName));
       setLoadStatus('success');
       setStatusMessage(`Loaded ${cached.length} rate entries from cache.`);
     }
@@ -93,6 +113,7 @@ function RateConfiguration() {
     const futureId = resolveAndLog(result.rates, futureRateName, 'Future Reservations');
     setOldRatePlanId(oldId);
     setFutureRatePlanId(futureId);
+    persistDefaults(oldRateName, futureRateName);
     setLoadStatus('success');
     setStatusMessage(result.message);
 
@@ -130,7 +151,11 @@ function RateConfiguration() {
             <input
               type="text"
               value={oldRateName}
-              onChange={(e) => setOldRateName(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setOldRateName(next);
+                persistDefaults(next, futureRateName);
+              }}
             />
           </div>
           <div className="config-field">
@@ -148,7 +173,11 @@ function RateConfiguration() {
             <input
               type="text"
               value={futureRateName}
-              onChange={(e) => setFutureRateName(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setFutureRateName(next);
+                persistDefaults(oldRateName, next);
+              }}
             />
           </div>
           <div className="config-field">

@@ -8,6 +8,13 @@ import {
   CloudbedsSource,
   SourceDefaults,
 } from './sourceConfigurationService';
+import {
+  loadRatesCache,
+  findRateMatch,
+  loadRateDefaults,
+  CloudbedsRateEntry,
+  RateDefaults,
+} from './rateConfigurationService';
 import { normalizeGender, normalizeCountry, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
 import { info, debug, warn, error as logError } from './debugLogger';
 
@@ -74,6 +81,8 @@ function buildPayload(
   roomTypes: CloudbedsRoomType[],
   sources: CloudbedsSource[],
   sourceDefaults: SourceDefaults,
+  rates: CloudbedsRateEntry[],
+  rateDefaults: RateDefaults,
 ): { payload: Record<string, string> | null; error: string | null } {
   const get = (header: string): string => (row[header] ?? '').trim();
 
@@ -126,8 +135,91 @@ function buildPayload(
     warn('Migration', 'normalize', `Row ${rowIndex}: country "${country}" not recognized — falling back to TR`, { rowIndex, raw: country });
   }
 
-  // Build rooms/adults/children as JSON arrays (API requires array format)
-  const roomsArray = JSON.stringify([{ quantity: Number(roomCount) || 1, roomTypeID }]);
+  // Determine past vs future reservation once (used by both source and rate
+  // default selection). Reservations with arrival < today are considered past.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const arrivalDate = new Date(arrival);
+  const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
+  const bucket = isPastReservation ? 'past' : 'future';
+
+  // Rate resolution (scoped to this row's roomTypeID):
+  //  1. If Excel rate is filled → exact / normalized / contains match against
+  //     configured rates for this room type.
+  //  2. If blank or no match → fall back to the configured past/future
+  //     default rate name, again scoped to this room type.
+  //  3. When a rate is resolved, its `rateID` becomes the `roomRateID` in the
+  //     rooms array.
+  const rawRateCode = get('Rate Code');
+  const normalizedRateKey = normalizeRateKey(rawRateCode);
+  const defaultRateName = isPastReservation
+    ? rateDefaults.pastRateName
+    : rateDefaults.futureRateName;
+
+  let chosenRateName: string | null = null;
+  let chosenRoomRateID: string | null = null;
+  let rateStrategy: string = 'none';
+  let usedDefaultRate = false;
+
+  if (rawRateCode) {
+    debug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
+      raw: rawRateCode, key: normalizedRateKey,
+    });
+    const match = findRateMatch(rates, roomTypeID, rawRateCode);
+    if (match.rate) {
+      chosenRateName = match.rate.ratePlanNamePublic;
+      chosenRoomRateID = match.rate.rateID;
+      rateStrategy = match.strategy;
+    }
+  }
+
+  if (!chosenRoomRateID && defaultRateName) {
+    const defaultMatch = findRateMatch(rates, roomTypeID, defaultRateName);
+    if (defaultMatch.rate) {
+      chosenRateName = defaultMatch.rate.ratePlanNamePublic;
+      chosenRoomRateID = defaultMatch.rate.rateID;
+      rateStrategy = `default-${bucket}:${defaultMatch.strategy}`;
+      usedDefaultRate = true;
+    }
+  }
+
+  debug('Migration', 'resolve', `Row ${rowIndex}: rate resolution → strategy=${rateStrategy}, name="${chosenRateName ?? '(none)'}", roomRateID=${chosenRoomRateID ?? '(none)'}`, {
+    rawRate: rawRateCode || '(blank)',
+    normalizedRate: normalizedRateKey,
+    roomTypeID,
+    bucket,
+    defaultRateName,
+    usedDefault: usedDefaultRate,
+    strategy: rateStrategy,
+    chosenRateName,
+    chosenRoomRateID,
+    availableRatesForRoomType: rates
+      .filter((r) => r.roomTypeID === roomTypeID)
+      .map((r) => ({ ratePlanNamePublic: r.ratePlanNamePublic, rateID: r.rateID }))
+      .slice(0, 10),
+  });
+
+  if (!chosenRoomRateID) {
+    warn('Migration', 'resolve', `Row ${rowIndex}: no rate resolvable for room type ${roomTypeID} (raw="${rawRateCode}", default="${defaultRateName}")`, {
+      rowIndex,
+      rawRate: rawRateCode,
+      normalizedRate: normalizedRateKey,
+      roomTypeID,
+      defaultRateName,
+      bucket,
+    });
+  }
+
+  // Build rooms/adults/children as JSON arrays (API requires array format).
+  // When a rate is resolved, include roomRateID inside the rooms entry.
+  const roomsEntry: Record<string, unknown> = {
+    quantity: Number(roomCount) || 1,
+    roomTypeID,
+  };
+  if (chosenRoomRateID) {
+    roomsEntry.roomRateID = chosenRoomRateID;
+  }
+  const roomsArray = JSON.stringify([roomsEntry]);
   const adultsArray = JSON.stringify([{ quantity: Number(adult) || 1, roomTypeID }]);
   const childrenArray = JSON.stringify([{ quantity: Number(child) || 0, roomTypeID }]);
 
@@ -156,14 +248,10 @@ function buildPayload(
   const rawSourceCode = get('Source Code');
   const normalizedSourceKey = normalizeSourceKey(rawSourceCode);
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const arrivalDate = new Date(arrival);
-  const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
   const defaultName = isPastReservation
     ? sourceDefaults.pastSourceName
     : sourceDefaults.futureSourceName;
-  const defaultBucket = isPastReservation ? 'past' : 'future';
+  const defaultBucket = bucket;
 
   let chosenSourceName: string | null = null;
   let chosenSourceID: string | null = null;
@@ -248,15 +336,7 @@ function buildPayload(
   const eta = get('ETA');
   if (eta) payload.estimatedArrivalTime = eta;
 
-  // Optional: rate code — normalize the Excel value before matching
-  const rawRateCode = get('Rate Code');
-  const normalizedRateKey = normalizeRateKey(rawRateCode);
-  if (rawRateCode) {
-    debug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
-      raw: rawRateCode, key: normalizedRateKey,
-    });
-    payload.ratePlanNamePublic = rawRateCode;
-  }
+  // Rate was resolved earlier (roomRateID is embedded inside the rooms array).
 
   // Optional: custom field
   const customField = get('Custom Field');
@@ -317,17 +397,22 @@ export async function migrateReservations(
     mainApiUrl, propertyId, postUrl,
   });
 
-  // Load cached room types and sources for resolution
+  // Load cached room types, sources, and rates for resolution
   const roomCache = loadRoomDataCache(propertyId);
   const roomTypes = roomCache?.roomTypes ?? [];
   const sourcesCache = loadSourcesCache(propertyId);
   const sources = sourcesCache ?? [];
   const sourceDefaults = loadSourceDefaults(propertyId);
+  const ratesCache = loadRatesCache(propertyId);
+  const rates = ratesCache ?? [];
+  const rateDefaults = loadRateDefaults(propertyId);
 
-  info('Migration', 'config', `Cached data: ${roomTypes.length} room types, ${sources.length} sources`, {
+  info('Migration', 'config', `Cached data: ${roomTypes.length} room types, ${sources.length} sources, ${rates.length} rate entries`, {
     roomTypeShortCodes: roomTypes.map((r) => r.roomTypeNameShort),
     sourceNames: sources.map((s) => s.sourceName),
     sourceDefaults,
+    rateDefaults,
+    ratePlanNames: [...new Set(rates.map((r) => r.ratePlanNamePublic))],
   });
 
   if (roomTypes.length === 0) {
@@ -335,6 +420,9 @@ export async function migrateReservations(
   }
   if (sources.length === 0) {
     warn('Migration', 'config', 'No sources cached — source resolution may fail');
+  }
+  if (rates.length === 0) {
+    warn('Migration', 'config', 'No rates cached — rate resolution may fail, roomRateID will be omitted');
   }
 
   // Parse file
@@ -372,7 +460,7 @@ export async function migrateReservations(
     const mRow = migrationRows[i];
 
     // Build payload
-    const { payload, error: buildError } = buildPayload(row, mRow.rowNumber, propertyId, roomTypes, sources, sourceDefaults);
+    const { payload, error: buildError } = buildPayload(row, mRow.rowNumber, propertyId, roomTypes, sources, sourceDefaults, rates, rateDefaults);
 
     if (buildError || !payload) {
       mRow.status = 'skipped';
