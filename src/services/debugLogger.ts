@@ -1,5 +1,6 @@
 // --- Debug Logger ---
 // Session-based in-memory log. Resets on app close.
+import { formatAppDateTimeForLog, getCurrentAppDateTime } from './appDateTimeService';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
@@ -15,7 +16,7 @@ export interface LogEntry {
 const logs: LogEntry[] = [];
 
 function now(): string {
-  return new Date().toISOString().replace('T', ' ').slice(0, 23);
+  return formatAppDateTimeForLog(getCurrentAppDateTime());
 }
 
 export function log(level: LogLevel, module: string, step: string, message: string, payload?: unknown): void {

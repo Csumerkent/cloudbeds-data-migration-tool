@@ -264,6 +264,61 @@ export function normalizePayment(raw: string | null | undefined): NormalizedPaym
 }
 
 // ===========================================================================
+// Email
+// ===========================================================================
+
+const EMPTY_LIKE_EMAILS = new Set([
+  '',
+  '-',
+  'n/a',
+  'na',
+  'none',
+  'null',
+  'undefined',
+]);
+
+/**
+ * Clean an email value before validation / sending.
+ *  - trims surrounding whitespace
+ *  - removes internal whitespace characters
+ *  - transliterates common non-ASCII characters to ASCII where safe
+ *  - treats empty-like placeholders consistently as blank
+ *
+ * Blank output is intentional: the migration layer can then apply its
+ * existing fallback email behavior without duplicating cleanup logic.
+ */
+export function normalizeEmail(raw: string | null | undefined): string {
+  if (raw == null) return '';
+
+  const trimmed = String(raw).trim();
+  if (!trimmed) return '';
+
+  const lowered = trimmed.toLowerCase();
+  if (EMPTY_LIKE_EMAILS.has(lowered)) return '';
+
+  const hasNonAscii = /[^\x00-\x7F]/.test(trimmed);
+  if (!hasNonAscii) {
+    return trimmed;
+  }
+
+  const transliterated = trimmed
+    .replace(/İ/g, 'I')
+    .replace(/ı/g, 'i')
+    .replace(/ß/g, 'ss')
+    .replace(/Æ/g, 'AE')
+    .replace(/æ/g, 'ae')
+    .replace(/Ø/g, 'O')
+    .replace(/ø/g, 'o')
+    .replace(/Œ/g, 'OE')
+    .replace(/œ/g, 'oe')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x00-\x7F]/g, '');
+
+  return transliterated.trim();
+}
+
+// ===========================================================================
 // Source / Rate matching keys
 // ===========================================================================
 

@@ -1,8 +1,10 @@
 import * as XLSX from 'xlsx';
 import { loadApiConfig } from './apiConfigurationService';
+import type { ValidationResult } from './excelTemplateService';
 import { loadRoomDataCache, resolveRoomTypeId, CloudbedsRoomType } from './roomConfigurationService';
 import {
   loadSourcesCache,
+  evaluateFutureSourceDecision,
   findSourceMatch,
   loadSourceDefaults,
   CloudbedsSource,
@@ -15,7 +17,8 @@ import {
   CloudbedsRateEntry,
   RateDefaults,
 } from './rateConfigurationService';
-import { normalizeGender, normalizeCountry, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
+import { normalizeGender, normalizeCountry, normalizeEmail, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
+import { getCurrentAppDateTime } from './appDateTimeService';
 import { info, debug, warn, error as logError } from './debugLogger';
 
 // ---------------------------------------------------------------------------
@@ -23,11 +26,18 @@ import { info, debug, warn, error as logError } from './debugLogger';
 // ---------------------------------------------------------------------------
 
 export type RowStatus = 'pending' | 'sending' | 'success' | 'failed' | 'skipped';
+export type MigrationErrorCategory = 'VALIDATION_ERROR' | 'API_ERROR' | 'AVAILABILITY_ERROR' | 'UNKNOWN_ERROR';
+export type MigrationFailureStage = 'pre_api' | 'post_api';
 
 export interface MigrationRow {
   rowNumber: number;           // Excel row (1-indexed, header = row 1)
   status: RowStatus;
   message: string;
+  errorCategory?: MigrationErrorCategory;
+  failureStage?: MigrationFailureStage;
+  failureDetails?: string[];
+  normalizedEmail?: string;
+  finalEmail?: string;
   reservationId?: string;      // Returned by Cloudbeds on success
   payload?: Record<string, string>; // The API payload sent
 }
@@ -56,6 +66,148 @@ export interface MigrationCancellation {
 // batches without overwhelming the API.
 const BATCH_SIZE = 50;
 const BATCH_CONCURRENCY = 10;
+
+interface BuildPayloadResult {
+  payload: Record<string, string> | null;
+  error: string | null;
+  errorCategory?: MigrationErrorCategory;
+  normalizedEmail: string;
+  finalEmail: string;
+}
+
+interface ParsedApiError {
+  category: MigrationErrorCategory;
+  reason: string;
+  details: string[];
+  responseSummary: string;
+}
+
+const AVAILABILITY_PATTERNS = [
+  'availability',
+  'inventory',
+  'no availability',
+  'not available',
+  'unavailable',
+  'sold out',
+  'room rate availability',
+];
+
+const VALIDATION_PATTERNS = [
+  'validation',
+  'invalid',
+  'required',
+  'must be',
+  'missing',
+  'not allowed',
+  'incorrect',
+  'malformed',
+];
+
+function flattenStructuredDetails(value: unknown, path = '', depth = 0): string[] {
+  if (value == null || depth > 4) return [];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [path ? `${path}: ${trimmed}` : trimmed] : [];
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return path ? [`${path}: ${String(value)}`] : [String(value)];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => flattenStructuredDetails(item, path, depth + 1));
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => {
+      const childPath = path ? `${path}.${key}` : key;
+      return flattenStructuredDetails(child, childPath, depth + 1);
+    });
+  }
+  return [];
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function collectApiMessages(data: unknown): string[] {
+  if (!data || typeof data !== 'object') return [];
+  const obj = data as Record<string, unknown>;
+  const direct = uniqueStrings([
+    typeof obj.message === 'string' ? obj.message : '',
+    typeof obj.error === 'string' ? obj.error : '',
+    typeof obj.detail === 'string' ? obj.detail : '',
+    typeof obj.description === 'string' ? obj.description : '',
+    typeof obj.summary === 'string' ? obj.summary : '',
+  ]);
+  const nested = uniqueStrings([
+    ...flattenStructuredDetails(obj.errors, 'errors'),
+    ...flattenStructuredDetails(obj.validationErrors, 'validationErrors'),
+    ...flattenStructuredDetails(obj.errorDetails, 'errorDetails'),
+    ...flattenStructuredDetails(obj.details, 'details'),
+    ...flattenStructuredDetails(obj.data, 'data'),
+  ]);
+  return uniqueStrings([...direct, ...nested]);
+}
+
+function categorizeFailure(status: number, joinedText: string, hasStructuredValidation: boolean): MigrationErrorCategory {
+  const lower = joinedText.toLowerCase();
+  if (AVAILABILITY_PATTERNS.some((pattern) => lower.includes(pattern))) {
+    return 'AVAILABILITY_ERROR';
+  }
+  if (
+    hasStructuredValidation ||
+    status === 400 ||
+    status === 422 ||
+    VALIDATION_PATTERNS.some((pattern) => lower.includes(pattern))
+  ) {
+    return 'VALIDATION_ERROR';
+  }
+  if (joinedText.trim()) {
+    return 'API_ERROR';
+  }
+  return 'UNKNOWN_ERROR';
+}
+
+function summarizeResponse(data: unknown, rawText?: string): string {
+  if (data && typeof data === 'object') {
+    const keys = Object.keys(data as Record<string, unknown>);
+    if (keys.length > 0) {
+      return `Response keys: ${keys.slice(0, 8).join(', ')}`;
+    }
+  }
+  if (rawText?.trim()) {
+    return `Raw response: ${rawText.slice(0, 240)}`;
+  }
+  return 'No response body returned';
+}
+
+function parseApiFailure(status: number, data: unknown, transportError?: string, rawText?: string): ParsedApiError {
+  const messages = collectApiMessages(data);
+  const hasStructuredValidation =
+    !!data &&
+    typeof data === 'object' &&
+    ['errors', 'validationErrors', 'errorDetails'].some((key) => (data as Record<string, unknown>)[key] != null);
+  const firstUsableMessage =
+    messages[0]
+    || transportError?.trim()
+    || (rawText?.trim() ? rawText.trim().slice(0, 240) : '');
+  const reason = firstUsableMessage || 'Unknown error — check payload or API response';
+  const joinedText = uniqueStrings([reason, transportError, rawText, ...messages]).join(' | ');
+
+  return {
+    category: categorizeFailure(status, joinedText, hasStructuredValidation),
+    reason,
+    details: messages.slice(1, 8),
+    responseSummary: summarizeResponse(data, rawText),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Parse uploaded file into raw row maps
@@ -100,7 +252,7 @@ function buildPayload(
   sourceDefaults: SourceDefaults,
   rates: CloudbedsRateEntry[],
   rateDefaults: RateDefaults,
-): { payload: Record<string, string> | null; error: string | null } {
+): BuildPayloadResult {
   const get = (header: string): string => (row[header] ?? '').trim();
 
   // Required fields
@@ -110,6 +262,9 @@ function buildPayload(
   const lastName = get('Last Name *');
   const roomTypeCode = get('Room Type *');
   const country = get('Country *');
+  const rawEmail = get('Email *');
+  const normalizedEmail = normalizeEmail(rawEmail);
+  const finalEmail = normalizedEmail || `migration+${rowIndex}@example.com`;
 
   if (!arrival || !departure || !firstName || !lastName || !roomTypeCode || !country) {
     debug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
@@ -117,7 +272,13 @@ function buildPayload(
       firstName: firstName || '(empty)', lastName: lastName || '(empty)',
       roomTypeCode: roomTypeCode || '(empty)', country: country || '(empty)',
     });
-    return { payload: null, error: 'Missing required fields' };
+    return {
+      payload: null,
+      error: 'Missing required fields',
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
   }
 
   // Resolve room type
@@ -126,14 +287,33 @@ function buildPayload(
     roomTypeCode, roomTypeID, availableTypes: roomTypes.map((r) => r.roomTypeNameShort).slice(0, 10),
   });
   if (!roomTypeID) {
-    return { payload: null, error: `Room type "${roomTypeCode}" not found in Cloudbeds` };
+    return {
+      payload: null,
+      error: `Room type "${roomTypeCode}" not found in Cloudbeds`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
   }
 
   // Apply defaults
-  const email = get('Email *') || `migration+${rowIndex}@example.com`;
+  const email = finalEmail;
   const adult = get('Adult *') || '1';
   const child = get('Child') || '0';
   const roomCount = get('Room Count') || '1';
+
+  const trimmedEmail = (rawEmail ?? '').trim();
+  const emailChanged = trimmedEmail !== finalEmail;
+  const emailContainsNonAscii = /[^\x00-\x7F]/.test(trimmedEmail);
+  if (emailChanged || emailContainsNonAscii || normalizedEmail === '') {
+    debug('Migration', 'normalize', `Row ${rowIndex}: email "${rawEmail}" → "${normalizedEmail || '(blank)'}"`, {
+      raw: rawEmail,
+      normalized: normalizedEmail || '(blank)',
+      final: finalEmail,
+      usedFallback: normalizedEmail === '',
+      emailContainsNonAscii,
+    });
+  }
 
   // Normalize payment method (credit / ebanking / cash)
   const rawPaymentMethod = get('Payment Method *');
@@ -153,7 +333,7 @@ function buildPayload(
 
   // Determine past vs future reservation once (used by both source and rate
   // default selection). Reservations with arrival < today are considered past.
-  const today = new Date();
+  const today = getCurrentAppDateTime();
   today.setHours(0, 0, 0, 0);
   const arrivalDate = new Date(arrival);
   const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
@@ -264,44 +444,51 @@ function buildPayload(
   };
 
   // Source resolution:
-  //  1. If Excel value is filled → exact / normalized / contains match.
-  //  2. If still no match (or value is blank) → fall back to the configured
-  //     past or future default depending on the arrival date.
-  //  3. The default name is itself resolved through the same matcher so that
-  //     "FORMERPMS" / "Direct - Hotel" find the closest entry in this property.
+  //  - Past reservations use the configured old-reservations source.
+  //  - Future reservations only include sourceID when the Excel source resolves
+  //    to an active third-party source. Otherwise sourceID is omitted.
   const rawSourceCode = get('Source Code');
   const normalizedSourceKey = normalizeSourceKey(rawSourceCode);
-
-  const defaultName = isPastReservation
-    ? sourceDefaults.pastSourceName
-    : sourceDefaults.futureSourceName;
-  const defaultBucket = bucket;
 
   let chosenSourceName: string | null = null;
   let chosenSourceID: string | null = null;
   let strategyUsed: string = 'none';
-  let usedDefault = false;
+  let sourceDecisionReason:
+    | 'PAST_CONFIGURED_OLD_SOURCE_APPLIED'
+    | 'FUTURE_THIRD_PARTY_ACTIVE_SOURCE_INCLUDED'
+    | 'NON_THIRD_PARTY_FUTURE_SOURCE'
+    | 'INACTIVE_SOURCE'
+    | 'SOURCE_UNRESOLVED'
+    | 'SOURCE_EMPTY' = 'SOURCE_EMPTY';
+  let matchedSource: CloudbedsSource | null = null;
 
-  if (rawSourceCode) {
-    debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
-      raw: rawSourceCode, key: normalizedSourceKey,
-    });
-    const match = findSourceMatch(sources, rawSourceCode);
-    if (match.source) {
-      chosenSourceName = match.source.sourceName;
-      chosenSourceID = match.source.sourceID;
-      strategyUsed = match.strategy;
-    }
-  }
-
-  if (!chosenSourceID) {
-    // Fall back to the configured default for this row's bucket.
-    const defaultMatch = findSourceMatch(sources, defaultName);
+  if (isPastReservation) {
+    const defaultMatch = findSourceMatch(sources, sourceDefaults.pastSourceName);
+    matchedSource = defaultMatch.source;
     if (defaultMatch.source) {
       chosenSourceName = defaultMatch.source.sourceName;
       chosenSourceID = defaultMatch.source.sourceID;
-      strategyUsed = `default-${defaultBucket}:${defaultMatch.strategy}`;
-      usedDefault = true;
+      strategyUsed = `default-past:${defaultMatch.strategy}`;
+    }
+    sourceDecisionReason = 'PAST_CONFIGURED_OLD_SOURCE_APPLIED';
+  } else {
+    if (rawSourceCode) {
+      debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
+        raw: rawSourceCode, key: normalizedSourceKey,
+      });
+      const match = findSourceMatch(sources, rawSourceCode);
+      matchedSource = match.source;
+      if (match.source) {
+        chosenSourceName = match.source.sourceName;
+        strategyUsed = match.strategy;
+      }
+      const futureDecision = evaluateFutureSourceDecision(match.source, rawSourceCode);
+      sourceDecisionReason = futureDecision.reason;
+      if (futureDecision.includeSource && futureDecision.sourceID) {
+        chosenSourceID = futureDecision.sourceID;
+      }
+    } else {
+      sourceDecisionReason = 'SOURCE_EMPTY';
     }
   }
 
@@ -309,24 +496,40 @@ function buildPayload(
     rawSource: rawSourceCode || '(blank)',
     normalizedSource: normalizedSourceKey,
     arrival,
-    bucket: defaultBucket,
-    defaultName,
-    usedDefault,
+    bucket,
+    configuredOldReservationsSource: sourceDefaults.pastSourceName,
     strategy: strategyUsed,
     chosenSourceName,
     chosenSourceID,
+    sourceDecisionReason,
+    matchedSourceSummary: matchedSource
+      ? {
+        sourceID: matchedSource.sourceID,
+        sourceName: matchedSource.sourceName,
+        isThirdParty: matchedSource.isThirdParty,
+        status: matchedSource.status,
+      }
+      : null,
     availableSources: sources.map((s) => s.sourceName).slice(0, 10),
   });
 
   if (chosenSourceID) {
     payload.sourceID = chosenSourceID;
   } else {
-    warn('Migration', 'resolve', `Row ${rowIndex}: no source resolvable (raw="${rawSourceCode}", default="${defaultName}") — omitting`, {
+    warn('Migration', 'resolve', `Row ${rowIndex}: source omitted (${sourceDecisionReason})`, {
       rowIndex,
-      rawSource: rawSourceCode,
+      bucket,
+      rawSource: rawSourceCode || '(blank)',
       normalizedSource: normalizedSourceKey,
-      defaultName,
-      bucket: defaultBucket,
+      matchedSourceSummary: matchedSource
+        ? {
+          sourceID: matchedSource.sourceID,
+          sourceName: matchedSource.sourceName,
+          isThirdParty: matchedSource.isThirdParty,
+          status: matchedSource.status,
+        }
+        : null,
+      reason: sourceDecisionReason,
     });
   }
 
@@ -354,7 +557,11 @@ function buildPayload(
 
   // Optional: requirements / special requests
   const requirements = get('Requirements');
-  if (requirements) payload.guestSpecialRequests = requirements;
+  if (requirements) {
+    debug('Migration', 'payload', `Row ${rowIndex}: requirements captured but omitted from payload`, {
+      requirements,
+    });
+  }
 
   // Optional: ETA
   const eta = get('ETA');
@@ -408,7 +615,16 @@ function buildPayload(
       normalized: normalizedSourceKey,
       chosenName: chosenSourceName,
       chosenID: chosenSourceID,
-      usedDefault,
+      includeSource: !!chosenSourceID,
+      reason: sourceDecisionReason,
+      matchedSource: matchedSource
+        ? {
+          sourceID: matchedSource.sourceID,
+          sourceName: matchedSource.sourceName,
+          isThirdParty: matchedSource.isThirdParty,
+          status: matchedSource.status,
+        }
+        : null,
       strategy: strategyUsed,
     },
     rate: {
@@ -432,6 +648,12 @@ function buildPayload(
       raw: rawPaymentMethod,
       normalized: paymentMethod,
     },
+    email: {
+      raw: rawEmail,
+      normalized: normalizedEmail || '(blank)',
+      final: finalEmail,
+      usedFallback: normalizedEmail === '',
+    },
     payloadSummary: {
       startDate: payload.startDate,
       endDate: payload.endDate,
@@ -448,7 +670,7 @@ function buildPayload(
     },
   });
 
-  return { payload, error: null };
+  return { payload, error: null, normalizedEmail, finalEmail };
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +681,7 @@ export async function migrateReservations(
   file: File,
   onProgress: (progress: MigrationProgress) => void,
   cancellation?: MigrationCancellation,
+  validationResult?: ValidationResult | null,
 ): Promise<MigrationProgress> {
   info('Migration', 'start', `Starting reservation migration from ${file.name}`);
 
@@ -537,14 +760,46 @@ export async function migrateReservations(
   };
   emitProgress();
 
+  const validRowSet = validationResult ? new Set(validationResult.validRowNumbers) : null;
+
   // Process a single row: build the payload, send it, update mRow + counters.
   // This function is invoked from a worker pool and never throws.
   const processRow = async (rowIndex: number): Promise<void> => {
     const row = rows[rowIndex];
     const mRow = migrationRows[rowIndex];
+    const normalizedEmail = normalizeEmail(row['Email *']);
+    const finalEmail = normalizedEmail || `migration+${mRow.rowNumber}@example.com`;
+    mRow.normalizedEmail = normalizedEmail;
+    mRow.finalEmail = finalEmail;
+
+    if (validRowSet && !validRowSet.has(mRow.rowNumber)) {
+      const rowIssues = validationResult?.rowIssues?.[mRow.rowNumber] ?? ['Row failed validation'];
+      mRow.status = 'skipped';
+      mRow.message = rowIssues[0] ?? 'Row failed validation';
+      mRow.errorCategory = 'VALIDATION_ERROR';
+      mRow.failureStage = 'pre_api';
+      mRow.failureDetails = rowIssues;
+      progress.completed++;
+      progress.failed++;
+      warn('Migration', 'skip', `Row ${mRow.rowNumber} skipped due to validation`, {
+        rowNumber: mRow.rowNumber,
+        errorCategory: mRow.errorCategory,
+        failureStage: mRow.failureStage,
+        normalizedEmail: normalizedEmail || '(blank)',
+        finalEmail,
+        rowIssues,
+      });
+      return;
+    }
 
     // Build payload
-    const { payload, error: buildError } = buildPayload(
+    const {
+      payload,
+      error: buildError,
+      errorCategory: buildErrorCategory,
+      normalizedEmail: cleanedEmail,
+      finalEmail: payloadEmail,
+    } = buildPayload(
       row,
       mRow.rowNumber,
       propertyId,
@@ -554,13 +809,24 @@ export async function migrateReservations(
       rates,
       rateDefaults,
     );
+    mRow.normalizedEmail = cleanedEmail;
+    mRow.finalEmail = payloadEmail;
 
     if (buildError || !payload) {
       mRow.status = 'skipped';
       mRow.message = buildError ?? 'Failed to build payload';
+      mRow.errorCategory = buildErrorCategory ?? 'VALIDATION_ERROR';
+      mRow.failureStage = 'pre_api';
+      mRow.failureDetails = [mRow.message];
       progress.completed++;
       progress.failed++;
-      debug('Migration', 'skip', `Row ${mRow.rowNumber} skipped: ${mRow.message}`);
+      warn('Migration', 'skip', `Row ${mRow.rowNumber} skipped: ${mRow.message}`, {
+        rowNumber: mRow.rowNumber,
+        errorCategory: mRow.errorCategory,
+        failureStage: mRow.failureStage,
+        normalizedEmail: cleanedEmail || '(blank)',
+        finalEmail: payloadEmail,
+      });
       return;
     }
 
@@ -579,6 +845,7 @@ export async function migrateReservations(
       debug('Migration', 'response', `Row ${mRow.rowNumber}: HTTP ${result.status}`, {
         ok: result.ok, status: result.status,
         data: result.data,
+        rawText: result.rawText,
         error: result.error,
       });
 
@@ -593,22 +860,70 @@ export async function migrateReservations(
           progress.succeeded++;
           info('Migration', 'success', `Row ${mRow.rowNumber}: ${mRow.message}`);
         } else {
+          const parsedError = parseApiFailure(result.status, result.data, result.error, result.rawText);
           mRow.status = 'failed';
-          mRow.message = respData?.message ?? `API returned success=false (HTTP ${result.status})`;
+          mRow.message = parsedError.reason;
+          mRow.errorCategory = parsedError.category;
+          mRow.failureStage = 'post_api';
+          mRow.failureDetails = [parsedError.responseSummary, ...parsedError.details];
           progress.failed++;
-          warn('Migration', 'api-error', `Row ${mRow.rowNumber}: ${mRow.message}`, { response: respData });
+          warn('Migration', 'api-error', `Row ${mRow.rowNumber}: ${mRow.message}`, {
+            rowNumber: mRow.rowNumber,
+            errorCategory: mRow.errorCategory,
+            failureStage: mRow.failureStage,
+            normalizedEmail: cleanedEmail || '(blank)',
+            finalEmail: payloadEmail,
+            parsedError,
+            response: respData,
+          });
+          if (!respData?.message) {
+            debug('Migration', 'api-error-raw', `Row ${mRow.rowNumber}: raw API failure response`, {
+              status: result.status,
+              rawText: result.rawText,
+              data: result.data,
+            });
+          }
         }
       } else {
+        const parsedError = parseApiFailure(result.status, result.data, result.error, result.rawText);
         mRow.status = 'failed';
-        mRow.message = result.error ?? `HTTP ${result.status}`;
+        mRow.message = parsedError.reason;
+        mRow.errorCategory = parsedError.category;
+        mRow.failureStage = 'post_api';
+        mRow.failureDetails = [parsedError.responseSummary, ...parsedError.details];
         progress.failed++;
-        warn('Migration', 'http-error', `Row ${mRow.rowNumber}: ${mRow.message}`, { status: result.status });
+        warn('Migration', 'http-error', `Row ${mRow.rowNumber}: ${mRow.message}`, {
+          rowNumber: mRow.rowNumber,
+          status: result.status,
+          errorCategory: mRow.errorCategory,
+          failureStage: mRow.failureStage,
+          normalizedEmail: cleanedEmail || '(blank)',
+          finalEmail: payloadEmail,
+          parsedError,
+        });
+        if (parsedError.reason === 'Unknown error — check payload or API response') {
+          debug('Migration', 'api-error-raw', `Row ${mRow.rowNumber}: raw HTTP failure response`, {
+            status: result.status,
+            rawText: result.rawText,
+            data: result.data,
+            transportError: result.error,
+          });
+        }
       }
     } catch (err) {
       mRow.status = 'failed';
       mRow.message = err instanceof Error ? err.message : String(err);
+      mRow.errorCategory = 'UNKNOWN_ERROR';
+      mRow.failureStage = 'post_api';
+      mRow.failureDetails = [mRow.message];
       progress.failed++;
-      logError('Migration', 'exception', `Row ${mRow.rowNumber}: ${mRow.message}`);
+      logError('Migration', 'exception', `Row ${mRow.rowNumber}: ${mRow.message}`, {
+        rowNumber: mRow.rowNumber,
+        errorCategory: mRow.errorCategory,
+        failureStage: mRow.failureStage,
+        normalizedEmail: cleanedEmail || '(blank)',
+        finalEmail: payloadEmail,
+      });
     }
 
     progress.completed++;
@@ -677,6 +992,8 @@ export async function migrateReservations(
       rowNumber: r.rowNumber,
       status: r.status,
       reason: r.message,
+      category: r.errorCategory ?? '(none)',
+      stage: r.failureStage ?? '(none)',
     }));
 
   const summaryHeadline = progress.stopped

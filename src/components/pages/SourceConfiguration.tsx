@@ -172,7 +172,8 @@ function SourceConfiguration() {
         <strong>FORMERPMS</strong>. Ensure all tax settings are correctly configured.
         <br />
         <strong>For future reservations:</strong> Use the same menu. Decide the
-        appropriate source for new reservations.
+        appropriate source for new reservations. This field remains visible for
+        later use, but it is currently inactive in reservation migration.
       </div>
 
       <div className="config-section config-section--compact">
@@ -205,16 +206,13 @@ function SourceConfiguration() {
             <input
               type="text"
               value={futureSourceName}
-              onChange={(e) => {
-                const next = e.target.value;
-                setFutureSourceName(next);
-                persistDefaults(oldSourceName, next);
-              }}
+              disabled
+              readOnly
             />
           </div>
           <div className="config-field">
             <label>Source ID</label>
-            <input type="text" readOnly value={futureSourceId} placeholder="—" />
+            <input type="text" readOnly disabled value={futureSourceId} placeholder="—" />
           </div>
         </div>
       </div>

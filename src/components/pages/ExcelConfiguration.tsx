@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   generateReservationTemplate,
   generateProfilesTemplate,
@@ -13,16 +13,51 @@ import {
 import { info, debug } from '../../services/debugLogger';
 import './pages.css';
 
+const MIGRATION_UI_STORAGE_KEY = 'cloudbeds-excel-migration-ui';
+
+interface PersistedExcelMigrationState {
+  resSummary: ValidationResult | null;
+  migrationProgress: MigrationProgress | null;
+  migrating: boolean;
+}
+
+function loadPersistedMigrationState(): PersistedExcelMigrationState {
+  const fallback: PersistedExcelMigrationState = {
+    resSummary: null,
+    migrationProgress: null,
+    migrating: false,
+  };
+
+  const raw = sessionStorage.getItem(MIGRATION_UI_STORAGE_KEY);
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedExcelMigrationState>;
+    return {
+      resSummary: parsed.resSummary ?? null,
+      migrationProgress: parsed.migrationProgress ?? null,
+      migrating: parsed.migrating ?? false,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistMigrationState(state: PersistedExcelMigrationState): void {
+  sessionStorage.setItem(MIGRATION_UI_STORAGE_KEY, JSON.stringify(state));
+}
+
 function ExcelConfiguration() {
+  const persistedState = loadPersistedMigrationState();
   // Reservation state
   const [resFile, setResFile] = useState<File | null>(null);
   const [resValidating, setResValidating] = useState(false);
-  const [resSummary, setResSummary] = useState<ValidationResult | null>(null);
+  const [resSummary, setResSummary] = useState<ValidationResult | null>(persistedState.resSummary);
   const resInputRef = useRef<HTMLInputElement>(null);
 
   // Migration state
-  const [migrating, setMigrating] = useState(false);
-  const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
+  const [migrating, setMigrating] = useState(persistedState.migrating);
+  const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(persistedState.migrationProgress);
   // Mutable cancellation handle shared with the migration loop. The Stop
   // button flips `cancelled = true`; the loop checks it between rows / batches.
   const cancellationRef = useRef<MigrationCancellation>({ cancelled: false });
@@ -31,6 +66,10 @@ function ExcelConfiguration() {
   const [profFile, setProfFile] = useState<File | null>(null);
   const [profSummary, setProfSummary] = useState<ValidationResult | null>(null);
   const profInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    persistMigrationState({ resSummary, migrationProgress, migrating });
+  }, [resSummary, migrationProgress, migrating]);
 
   // --- Reservation handlers ---
 
@@ -46,6 +85,7 @@ function ExcelConfiguration() {
     // (the other is starting a brand new migration).
     setMigrationProgress(null);
     cancellationRef.current = { cancelled: false };
+    persistMigrationState({ resSummary: null, migrationProgress: null, migrating: false });
     if (file) {
       info('Migration', 'upload', `File selected: ${file.name}`, { fileName: file.name, size: file.size });
     }
@@ -58,6 +98,7 @@ function ExcelConfiguration() {
     try {
       const result = await validateReservationFile(resFile);
       setResSummary(result);
+      persistMigrationState({ resSummary: result, migrationProgress, migrating });
       info('Migration', 'validation', `Validation complete: ${result.validRows} valid, ${result.invalidRows} invalid out of ${result.totalRows}`, {
         totalRows: result.totalRows, validRows: result.validRows,
         invalidRows: result.invalidRows, errorCount: result.errors.length,
@@ -78,16 +119,20 @@ function ExcelConfiguration() {
     cancellationRef.current = { cancelled: false };
     setMigrationProgress(null);
     setMigrating(true);
+    persistMigrationState({ resSummary, migrationProgress: null, migrating: true });
     info('Migration', 'start', `Migration initiated for ${resFile.name}`);
     try {
       const result = await migrateReservations(
         resFile,
         (p) => {
+          persistMigrationState({ resSummary, migrationProgress: { ...p }, migrating: true });
           setMigrationProgress({ ...p });
         },
         cancellationRef.current,
+        resSummary,
       );
       setMigrationProgress(result);
+      persistMigrationState({ resSummary, migrationProgress: result, migrating: false });
       info(
         'Migration',
         'summary',
@@ -140,6 +185,9 @@ function ExcelConfiguration() {
       validRows: 0,
       invalidRows: 0,
       errors: ['Profile validation is not implemented yet. This is a placeholder.'],
+      validRowNumbers: [],
+      invalidRowNumbers: [],
+      rowIssues: {},
     });
   };
 
@@ -319,7 +367,7 @@ function ExcelConfiguration() {
                 </thead>
                 <tbody>
                   {migrationProgress.rows.map((r) => (
-                    <tr key={r.rowNumber}>
+                  <tr key={r.rowNumber}>
                       <td>{r.rowNumber}</td>
                       <td style={{ color: statusColor(r.status), fontWeight: 700, textAlign: 'center' }}>
                         {statusIcon(r.status)}
@@ -327,7 +375,24 @@ function ExcelConfiguration() {
                       <td style={{ color: statusColor(r.status), textTransform: 'capitalize' }}>
                         {r.status}
                       </td>
-                      <td>{r.message}</td>
+                      <td>
+                        <div>{r.message}</div>
+                        {(r.errorCategory || r.failureStage) && (
+                          <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
+                            {(r.errorCategory ?? 'UNKNOWN_ERROR')} · {r.failureStage === 'post_api' ? 'after API send' : 'before API send'}
+                          </div>
+                        )}
+                        {r.finalEmail && (
+                          <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
+                            Email: {r.normalizedEmail ? `${r.normalizedEmail} -> ${r.finalEmail}` : `(blank) -> ${r.finalEmail}`}
+                          </div>
+                        )}
+                        {r.failureDetails && r.failureDetails.length > 0 && (
+                          <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
+                            {r.failureDetails.join(' | ')}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

@@ -8,7 +8,7 @@ export interface CloudbedsSource {
   sourceID: string;
   sourceName: string;
   isThirdParty: boolean;
-  status: string;
+  status: string | boolean;
   paymentCollect: string;
 }
 
@@ -185,7 +185,7 @@ export async function fetchSources(): Promise<FetchSourcesResult> {
         sourceID: String(id),
         sourceName: String(name),
         isThirdParty: Boolean(s.isThirdParty),
-        status: String(s.status ?? ''),
+        status: typeof s.status === 'boolean' ? s.status : String(s.status ?? ''),
         paymentCollect: String(s.paymentCollect ?? ''),
       });
     } else {
@@ -229,6 +229,43 @@ export type SourceMatchStrategy =
 export interface SourceMatchResult {
   source: CloudbedsSource | null;
   strategy: SourceMatchStrategy;
+}
+
+export interface FutureSourceDecision {
+  includeSource: boolean;
+  sourceID?: string;
+  reason:
+    | 'PAST_CONFIGURED_OLD_SOURCE_APPLIED'
+    | 'FUTURE_THIRD_PARTY_ACTIVE_SOURCE_INCLUDED'
+    | 'NON_THIRD_PARTY_FUTURE_SOURCE'
+    | 'INACTIVE_SOURCE'
+    | 'SOURCE_UNRESOLVED'
+    | 'SOURCE_EMPTY';
+}
+
+export function normalizeSourceStatus(status: string | boolean | null | undefined): boolean {
+  return status === true || status === 'true';
+}
+
+export function evaluateFutureSourceDecision(source: CloudbedsSource | null, rawInput: string | null | undefined): FutureSourceDecision {
+  const trimmed = (rawInput ?? '').trim();
+  if (!trimmed) {
+    return { includeSource: false, reason: 'SOURCE_EMPTY' };
+  }
+  if (!source) {
+    return { includeSource: false, reason: 'SOURCE_UNRESOLVED' };
+  }
+  if (source.isThirdParty !== true) {
+    return { includeSource: false, reason: 'NON_THIRD_PARTY_FUTURE_SOURCE' };
+  }
+  if (!normalizeSourceStatus(source.status)) {
+    return { includeSource: false, reason: 'INACTIVE_SOURCE' };
+  }
+  return {
+    includeSource: true,
+    sourceID: source.sourceID,
+    reason: 'FUTURE_THIRD_PARTY_ACTIVE_SOURCE_INCLUDED',
+  };
 }
 
 /**

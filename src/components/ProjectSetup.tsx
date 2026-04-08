@@ -4,8 +4,10 @@ import SourceConfiguration from './pages/SourceConfiguration';
 import RoomConfiguration from './pages/RoomConfiguration';
 import RateConfiguration from './pages/RateConfiguration';
 import ExcelConfiguration from './pages/ExcelConfiguration';
+import SystemSettings from './pages/SystemSettings';
 
 const SETUP_TABS = [
+  'System Settings',
   'API Configuration',
   'Source Configuration',
   'Room Configuration',
@@ -16,6 +18,7 @@ const SETUP_TABS = [
 type SetupTab = (typeof SETUP_TABS)[number];
 
 const TAB_COMPONENTS: Record<SetupTab, React.FC> = {
+  'System Settings': SystemSettings,
   'API Configuration': ApiConfiguration,
   'Source Configuration': SourceConfiguration,
   'Room Configuration': RoomConfiguration,

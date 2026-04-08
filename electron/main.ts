@@ -6,6 +6,19 @@ const DIST_ELECTRON = path.join(__dirname);
 
 let mainWindow: BrowserWindow | null = null;
 
+async function parseResponseBody(response: Response): Promise<{ data: unknown; rawText?: string }> {
+  const rawText = await response.text();
+  if (!rawText) {
+    return { data: null, rawText: '' };
+  }
+
+  try {
+    return { data: JSON.parse(rawText), rawText };
+  } catch {
+    return { data: null, rawText };
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -105,8 +118,8 @@ ipcMain.handle(
         signal: AbortSignal.timeout(15000),
       });
 
-      const data = await response.json();
-      return { ok: response.ok, status: response.status, data };
+      const { data, rawText } = await parseResponseBody(response);
+      return { ok: response.ok, status: response.status, data, rawText };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       return { ok: false, status: 0, data: null, error: msg };
@@ -131,8 +144,8 @@ ipcMain.handle(
         signal: AbortSignal.timeout(30000),
       });
 
-      const data = await response.json();
-      return { ok: response.ok, status: response.status, data };
+      const { data, rawText } = await parseResponseBody(response);
+      return { ok: response.ok, status: response.status, data, rawText };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       return { ok: false, status: 0, data: null, error: msg };

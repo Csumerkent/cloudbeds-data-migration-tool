@@ -29,6 +29,7 @@ export interface ApiGetResult {
   ok: boolean;
   status: number;
   data: unknown;
+  rawText?: string;
   error?: string;
 }
 
@@ -36,6 +37,7 @@ export interface ApiPostResult {
   ok: boolean;
   status: number;
   data: unknown;
+  rawText?: string;
   error?: string;
 }
 
