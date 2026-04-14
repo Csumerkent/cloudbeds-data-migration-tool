@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { getLogs, clearLogs, getModules, type LogEntry, type LogLevel } from '../../services/debugLogger';
+import { consumePendingDebugFilter } from '../../services/debugFilterState';
 import './pages.css';
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -20,6 +21,22 @@ function DebugTool() {
   const [moduleFilter, setModuleFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+
+  // Apply any pending cross-page filter exactly once (consumed = cleared).
+  // Set by screens like ExcelConfiguration when they link here via the
+  // `navigate-to-page` event, so the user lands with the right tab /
+  // level / module / search already selected.
+  useEffect(() => {
+    const pending = consumePendingDebugFilter();
+    if (!pending) return;
+    if (pending.tab) setActiveTab(pending.tab);
+    if (pending.level) setLevelFilter(pending.level);
+    if (pending.module) setModuleFilter(pending.module);
+    if (pending.search !== undefined) setSearch(pending.search);
+    // Refresh logs at the same time so newly written entries show up
+    // without the user having to click Refresh.
+    setLogs([...getLogs()]);
+  }, []);
 
   // Migration-only logs (separate source for the Migration tab).
   // Migration logs are displayed newest-first so the most recent activity

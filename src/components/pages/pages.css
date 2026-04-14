@@ -438,6 +438,26 @@
   font-size: 0.8rem;
 }
 
+/* Inline text-style button used when a numeric value doubles as a
+   hyperlink (e.g. clickable Invalid Rows count that deep-links into
+   the Debug Tool). Inherits text color from a parent inline style. */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-button:hover {
+  opacity: 0.8;
+}
+.link-button:focus {
+  outline: 1px dotted currentColor;
+  outline-offset: 2px;
+}
+
 /* Migration progress */
 .migration-progress-bar-bg {
   height: 8px;

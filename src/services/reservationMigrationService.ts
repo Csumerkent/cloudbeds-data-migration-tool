@@ -67,6 +67,13 @@ export interface MigrationCancellation {
 const BATCH_SIZE = 50;
 const BATCH_CONCURRENCY = 10;
 
+// Row count above which DEBUG-level row logs (payload detail, per-row
+// normalization, per-row resolve traces) are suppressed. INFO row
+// summaries, WARN, ERROR, and batch-level DEBUGs are still emitted so
+// the Debug Tool stays useful without drowning in per-row noise on
+// large imports.
+const VERBOSE_ROW_LIMIT = 1000;
+
 interface BuildPayloadResult {
   payload: Record<string, string> | null;
   error: string | null;
@@ -252,8 +259,15 @@ function buildPayload(
   sourceDefaults: SourceDefaults,
   rates: CloudbedsRateEntry[],
   rateDefaults: RateDefaults,
+  verbose: boolean,
 ): BuildPayloadResult {
   const get = (header: string): string => (row[header] ?? '').trim();
+  // Row-level DEBUG traces are suppressed for large imports (>1000 rows).
+  // WARN, ERROR, and the INFO row-summary below are always emitted so
+  // failures and audit trails remain intact.
+  const rowDebug = verbose
+    ? debug
+    : (_m: string, _s: string, _msg: string, _p?: unknown) => {};
 
   // Required fields
   const arrival = get('Arrival *');
@@ -267,7 +281,7 @@ function buildPayload(
   const finalEmail = normalizedEmail || `migration+${rowIndex}@example.com`;
 
   if (!arrival || !departure || !firstName || !lastName || !roomTypeCode || !country) {
-    debug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
+    rowDebug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
       arrival: arrival || '(empty)', departure: departure || '(empty)',
       firstName: firstName || '(empty)', lastName: lastName || '(empty)',
       roomTypeCode: roomTypeCode || '(empty)', country: country || '(empty)',
@@ -283,7 +297,7 @@ function buildPayload(
 
   // Resolve room type
   const roomTypeID = resolveRoomTypeId(roomTypes, roomTypeCode);
-  debug('Migration', 'resolve', `Row ${rowIndex}: room type "${roomTypeCode}" → ${roomTypeID || '(not found)'}`, {
+  rowDebug('Migration', 'resolve', `Row ${rowIndex}: room type "${roomTypeCode}" → ${roomTypeID || '(not found)'}`, {
     roomTypeCode, roomTypeID, availableTypes: roomTypes.map((r) => r.roomTypeNameShort).slice(0, 10),
   });
   if (!roomTypeID) {
@@ -318,13 +332,13 @@ function buildPayload(
   // Normalize payment method (credit / ebanking / cash)
   const rawPaymentMethod = get('Payment Method *');
   const paymentMethod = normalizePayment(rawPaymentMethod);
-  debug('Migration', 'normalize', `Row ${rowIndex}: payment "${rawPaymentMethod}" → "${paymentMethod}"`, {
+  rowDebug('Migration', 'normalize', `Row ${rowIndex}: payment "${rawPaymentMethod}" → "${paymentMethod}"`, {
     raw: rawPaymentMethod, normalized: paymentMethod,
   });
 
   // Normalize country to ISO2 (always populated; falls back to TR)
   const countryResult = normalizeCountry(country);
-  debug('Migration', 'normalize', `Row ${rowIndex}: country "${country}" → "${countryResult.iso2}"${countryResult.resolved ? '' : ' (fallback)'}`, {
+  rowDebug('Migration', 'normalize', `Row ${rowIndex}: country "${country}" → "${countryResult.iso2}"${countryResult.resolved ? '' : ' (fallback)'}`, {
     raw: country, normalized: countryResult.iso2, resolved: countryResult.resolved,
   });
   if (!countryResult.resolved) {
@@ -358,7 +372,7 @@ function buildPayload(
   let usedDefaultRate = false;
 
   if (rawRateCode) {
-    debug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
+    rowDebug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
       raw: rawRateCode, key: normalizedRateKey,
     });
     const match = findRateMatch(rates, roomTypeID, rawRateCode);
@@ -379,7 +393,7 @@ function buildPayload(
     }
   }
 
-  debug('Migration', 'resolve', `Row ${rowIndex}: rate resolution → strategy=${rateStrategy}, name="${chosenRateName ?? '(none)'}", roomRateID=${chosenRoomRateID ?? '(none)'}`, {
+  rowDebug('Migration', 'resolve', `Row ${rowIndex}: rate resolution → strategy=${rateStrategy}, name="${chosenRateName ?? '(none)'}", roomRateID=${chosenRoomRateID ?? '(none)'}`, {
     rawRate: rawRateCode || '(blank)',
     normalizedRate: normalizedRateKey,
     roomTypeID,
@@ -473,7 +487,7 @@ function buildPayload(
     sourceDecisionReason = 'PAST_CONFIGURED_OLD_SOURCE_APPLIED';
   } else {
     if (rawSourceCode) {
-      debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
+      rowDebug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
         raw: rawSourceCode, key: normalizedSourceKey,
       });
       const match = findSourceMatch(sources, rawSourceCode);
@@ -492,7 +506,7 @@ function buildPayload(
     }
   }
 
-  debug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${strategyUsed}, name="${chosenSourceName ?? '(none)'}", id=${chosenSourceID ?? '(none)'}`, {
+  rowDebug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${strategyUsed}, name="${chosenSourceName ?? '(none)'}", id=${chosenSourceID ?? '(none)'}`, {
     rawSource: rawSourceCode || '(blank)',
     normalizedSource: normalizedSourceKey,
     arrival,
@@ -542,7 +556,7 @@ function buildPayload(
   // Gender — always normalized to M / F / N/A; never raw Excel text
   const rawGender = get('Gender');
   const normalizedGender = normalizeGender(rawGender);
-  debug('Migration', 'normalize', `Row ${rowIndex}: gender "${rawGender}" → "${normalizedGender}"`, {
+  rowDebug('Migration', 'normalize', `Row ${rowIndex}: gender "${rawGender}" → "${normalizedGender}"`, {
     raw: rawGender, normalized: normalizedGender,
   });
   payload.guestGender = normalizedGender;
@@ -589,7 +603,7 @@ function buildPayload(
   const creationDate = get('Creation Date');
   if (creationDate) payload.dateCreated = creationDate;
 
-  debug('Migration', 'payload', `Row ${rowIndex}: payload built`, {
+  rowDebug('Migration', 'payload', `Row ${rowIndex}: payload built`, {
     rowIndex,
     startDate: payload.startDate,
     endDate: payload.endDate,
@@ -602,8 +616,10 @@ function buildPayload(
 
   // Consolidated per-row summary containing every raw → normalized value and
   // the resolved IDs. This is the single entry to inspect when investigating
-  // a specific row.
-  info('Migration', 'row-summary', `Row ${rowIndex}: summary`, {
+  // a specific row. Gated by `verbose` so large imports don't accumulate
+  // thousands of heavy payloads in the in-memory log.
+  const emitRowSummary = verbose ? info : (_m: string, _s: string, _msg: string, _p?: unknown) => {};
+  emitRowSummary('Migration', 'row-summary', `Row ${rowIndex}: summary`, {
     rowIndex,
     bucket,
     roomType: {
@@ -740,6 +756,16 @@ export async function migrateReservations(
 
   info('Migration', 'parse', `Parsed ${rows.length} rows`);
 
+  // Large imports suppress per-row DEBUG traces to keep the Debug Tool
+  // responsive. INFO/WARN/ERROR and batch-level debugs still flow.
+  const verbose = rows.length <= VERBOSE_ROW_LIMIT;
+  const rowDebug = verbose
+    ? debug
+    : (_m: string, _s: string, _msg: string, _p?: unknown) => {};
+  info('Migration', 'config', `Log verbosity: ${verbose ? 'detailed (row-level DEBUG enabled)' : `compact (row-level DEBUG suppressed; rows > ${VERBOSE_ROW_LIMIT})`}`, {
+    rows: rows.length, verbose, limit: VERBOSE_ROW_LIMIT,
+  });
+
   // Initialize progress
   const migrationRows: MigrationRow[] = rows.map((_, i) => ({
     rowNumber: i + 2, // +2: 1-indexed + header row
@@ -808,6 +834,7 @@ export async function migrateReservations(
       sourceDefaults,
       rates,
       rateDefaults,
+      verbose,
     );
     mRow.normalizedEmail = cleanedEmail;
     mRow.finalEmail = payloadEmail;
@@ -835,14 +862,14 @@ export async function migrateReservations(
     emitProgress();
 
     try {
-      debug('Migration', 'send', `Sending row ${mRow.rowNumber}`, {
+      rowDebug('Migration', 'send', `Sending row ${mRow.rowNumber}`, {
         url: postUrl,
         payload: { ...payload, propertyID: '***' },
       });
 
       const result = await window.electronAPI.apiPost({ url: postUrl, apiKey, body: payload });
 
-      debug('Migration', 'response', `Row ${mRow.rowNumber}: HTTP ${result.status}`, {
+      rowDebug('Migration', 'response', `Row ${mRow.rowNumber}: HTTP ${result.status}`, {
         ok: result.ok, status: result.status,
         data: result.data,
         rawText: result.rawText,

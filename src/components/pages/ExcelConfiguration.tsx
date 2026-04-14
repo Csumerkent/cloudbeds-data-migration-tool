@@ -11,6 +11,7 @@ import {
   MigrationCancellation,
 } from '../../services/reservationMigrationService';
 import { info, debug } from '../../services/debugLogger';
+import { setPendingDebugFilter, PendingDebugFilter } from '../../services/debugFilterState';
 import './pages.css';
 
 const MIGRATION_UI_STORAGE_KEY = 'cloudbeds-excel-migration-ui';
@@ -47,6 +48,23 @@ function persistMigrationState(state: PersistedExcelMigrationState): void {
   sessionStorage.setItem(MIGRATION_UI_STORAGE_KEY, JSON.stringify(state));
 }
 
+// Open the Debug Tool page with a prepared filter. Used by the Review
+// screen's Invalid Rows link and the Execution screen's "View logs"
+// shortcut so users land directly in the right view.
+function openDebugToolFiltered(filter: PendingDebugFilter): void {
+  setPendingDebugFilter(filter);
+  window.dispatchEvent(new CustomEvent('navigate-to-page', { detail: 'Debug Tool' }));
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s - m * 60);
+  return `${m}m ${rem}s`;
+}
+
 function ExcelConfiguration() {
   const persistedState = loadPersistedMigrationState();
   // Reservation state
@@ -58,9 +76,23 @@ function ExcelConfiguration() {
   // Migration state
   const [migrating, setMigrating] = useState(persistedState.migrating);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(persistedState.migrationProgress);
+  // Start time of the current migration (null until Migrate is clicked).
+  // `elapsed` ticks while running and freezes once the run finishes/stops.
+  const [migrationStartedAt, setMigrationStartedAt] = useState<number | null>(null);
+  const [migrationElapsedMs, setMigrationElapsedMs] = useState<number>(0);
   // Mutable cancellation handle shared with the migration loop. The Stop
   // button flips `cancelled = true`; the loop checks it between rows / batches.
   const cancellationRef = useRef<MigrationCancellation>({ cancelled: false });
+
+  // Tick elapsed timer while migrating. Stops as soon as `migrating`
+  // flips false; `migrationFinishedAt` pins the final duration.
+  useEffect(() => {
+    if (!migrating || migrationStartedAt == null) return;
+    const id = window.setInterval(() => {
+      setMigrationElapsedMs(Date.now() - migrationStartedAt);
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [migrating, migrationStartedAt]);
 
   // Profiles state
   const [profFile, setProfFile] = useState<File | null>(null);
@@ -118,6 +150,9 @@ function ExcelConfiguration() {
     // so a previous Stop click can't pre-cancel this run.
     cancellationRef.current = { cancelled: false };
     setMigrationProgress(null);
+    const started = Date.now();
+    setMigrationStartedAt(started);
+    setMigrationElapsedMs(0);
     setMigrating(true);
     persistMigrationState({ resSummary, migrationProgress: null, migrating: true });
     info('Migration', 'start', `Migration initiated for ${resFile.name}`);
@@ -148,6 +183,10 @@ function ExcelConfiguration() {
         },
       );
     } finally {
+      // Use the locally-captured `started` so the duration is correct
+      // regardless of when the `migrationStartedAt` state actually
+      // flushed through React.
+      setMigrationElapsedMs(Date.now() - started);
       setMigrating(false);
     }
   };
@@ -189,28 +228,6 @@ function ExcelConfiguration() {
       invalidRowNumbers: [],
       rowIssues: {},
     });
-  };
-
-  // --- Helpers ---
-
-  const statusIcon = (status: string) => {
-    switch (status) {
-      case 'success': return '\u2713';
-      case 'failed': return '\u2717';
-      case 'skipped': return '\u2014';
-      case 'sending': return '\u25CB';
-      default: return '\u00B7';
-    }
-  };
-
-  const statusColor = (status: string) => {
-    switch (status) {
-      case 'success': return '#2e7d32';
-      case 'failed': return '#c62828';
-      case 'skipped': return '#f57c00';
-      case 'sending': return '#1a73e8';
-      default: return '#999';
-    }
   };
 
   return (
@@ -258,34 +275,54 @@ function ExcelConfiguration() {
 
         {resSummary && (
           <div className="excel-validation-result">
-            <dl className="summary-grid">
-              <dt>Total Rows</dt>
-              <dd>{resSummary.totalRows}</dd>
-              <dt>Valid Rows</dt>
-              <dd style={{ color: resSummary.validRows > 0 ? '#2e7d32' : undefined }}>
-                {resSummary.validRows}
-              </dd>
-              <dt>Invalid Rows</dt>
-              <dd style={{ color: resSummary.invalidRows > 0 ? '#c62828' : undefined }}>
-                {resSummary.invalidRows}
-              </dd>
-            </dl>
-
-            {resSummary.errors.length > 0 && (
-              <div className="excel-errors">
-                <strong>Issues:</strong>
-                <ul className="error-list">
-                  {resSummary.errors.map((err, i) => (
-                    <li key={i}>{err}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {resSummary.errors.length === 0 && resSummary.validRows > 0 && (
+            {/* Compact execution readiness. When every row is valid we
+                collapse the dl entirely and show a single success line so
+                the eye lands straight on Migrate. When some rows are
+                invalid we keep totals + a clickable Invalid Rows count
+                that deep-links into the Debug Tool filtered to this
+                file — no error list is rendered inline. */}
+            {resSummary.invalidRows === 0 && resSummary.validRows > 0 ? (
               <div className="status-area status-area--success">
-                All {resSummary.validRows} rows passed validation.
+                Ready to migrate — all {resSummary.validRows} rows passed validation.
               </div>
+            ) : (
+              <>
+                <dl className="summary-grid">
+                  <dt>File</dt>
+                  <dd>{resSummary.fileName}</dd>
+                  <dt>Total Rows</dt>
+                  <dd>{resSummary.totalRows}</dd>
+                  <dt>Valid Rows</dt>
+                  <dd style={{ color: resSummary.validRows > 0 ? '#2e7d32' : undefined }}>
+                    {resSummary.validRows}
+                  </dd>
+                  <dt>Invalid Rows</dt>
+                  <dd>
+                    {resSummary.invalidRows > 0 ? (
+                      <button
+                        type="button"
+                        className="link-button"
+                        style={{ color: '#c62828', fontWeight: 600 }}
+                        onClick={() => openDebugToolFiltered({
+                          tab: 'migration',
+                          level: 'WARN',
+                          search: resSummary.fileName,
+                        })}
+                        title="Open the Debug Tool filtered to validation issues for this file"
+                      >
+                        {resSummary.invalidRows} — view details
+                      </button>
+                    ) : (
+                      <span>0</span>
+                    )}
+                  </dd>
+                </dl>
+                {resSummary.validRows === 0 && (
+                  <div className="status-area status-area--idle">
+                    No valid rows to migrate. Fix the invalid rows and re-upload.
+                  </div>
+                )}
+              </>
             )}
 
             {/* Migrate / Stop buttons */}
@@ -314,10 +351,11 @@ function ExcelConfiguration() {
           </div>
         )}
 
-        {/* Migration progress */}
+        {/* Migration progress — compact summary only. Per-row detail
+            lives in the Debug Tool (one click away via "View logs"). */}
         {migrationProgress && (
           <div className="config-section" style={{ marginTop: 16 }}>
-            <h4>Migration Results</h4>
+            <h4>Execution Status</h4>
 
             {/* Progress bar */}
             <div className="migration-progress-bar-bg">
@@ -334,70 +372,65 @@ function ExcelConfiguration() {
               {migrationProgress.completed} / {migrationProgress.total} rows processed
               {migrationProgress.stopped
                 ? ' — stopped by user'
-                : migrationProgress.completed === migrationProgress.total
+                : !migrating && migrationProgress.completed === migrationProgress.total
                   ? ' — done'
-                  : ''}
+                  : migrating
+                    ? ' — in progress'
+                    : ''}
             </div>
+
+            {/* Compact summary row: counts on the left, Log shortcut on
+                the right. No per-row table — per-row detail is in the
+                Debug Tool, pre-filtered to this migration. */}
+            <div
+              style={{
+                marginTop: 12,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                <span>
+                  <strong>Processed:</strong> {migrationProgress.completed}
+                </span>
+                <span style={{ color: '#2e7d32' }}>
+                  <strong>Succeeded:</strong> {migrationProgress.succeeded}
+                </span>
+                <span style={{ color: migrationProgress.failed > 0 ? '#c62828' : undefined }}>
+                  <strong>Failed:</strong> {migrationProgress.failed}
+                </span>
+                <span style={{ color: '#555' }}>
+                  <strong>Duration:</strong> {formatElapsed(migrationElapsedMs)}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => openDebugToolFiltered({
+                  tab: 'migration',
+                  level: 'ALL',
+                  search: resFile?.name ?? '',
+                })}
+                title="Open the Debug Tool filtered to Migration logs for this file"
+              >
+                View logs
+              </button>
+            </div>
+
             {migrationProgress.stopped && (
               <div className="status-area status-area--idle" style={{ marginTop: 8 }}>
                 Migration was stopped. {migrationProgress.total - migrationProgress.completed} row(s) were not processed.
               </div>
             )}
-
-            {/* Summary counts */}
-            <dl className="summary-grid" style={{ marginTop: 8 }}>
-              <dt>Succeeded</dt>
-              <dd style={{ color: '#2e7d32' }}>{migrationProgress.succeeded}</dd>
-              <dt>Failed</dt>
-              <dd style={{ color: migrationProgress.failed > 0 ? '#c62828' : undefined }}>
-                {migrationProgress.failed}
-              </dd>
-            </dl>
-
-            {/* Row-level results table */}
-            <div className="scrollable-list" style={{ maxHeight: 300 }}>
-              <table className="compact-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 50 }}>Row</th>
-                    <th style={{ width: 30 }}></th>
-                    <th style={{ width: 70 }}>Status</th>
-                    <th>Message</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {migrationProgress.rows.map((r) => (
-                  <tr key={r.rowNumber}>
-                      <td>{r.rowNumber}</td>
-                      <td style={{ color: statusColor(r.status), fontWeight: 700, textAlign: 'center' }}>
-                        {statusIcon(r.status)}
-                      </td>
-                      <td style={{ color: statusColor(r.status), textTransform: 'capitalize' }}>
-                        {r.status}
-                      </td>
-                      <td>
-                        <div>{r.message}</div>
-                        {(r.errorCategory || r.failureStage) && (
-                          <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
-                            {(r.errorCategory ?? 'UNKNOWN_ERROR')} · {r.failureStage === 'post_api' ? 'after API send' : 'before API send'}
-                          </div>
-                        )}
-                        {r.finalEmail && (
-                          <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
-                            Email: {r.normalizedEmail ? `${r.normalizedEmail} -> ${r.finalEmail}` : `(blank) -> ${r.finalEmail}`}
-                          </div>
-                        )}
-                        {r.failureDetails && r.failureDetails.length > 0 && (
-                          <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
-                            {r.failureDetails.join(' | ')}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {migrationProgress.failed > 0 && !migrating && (
+              <div style={{ marginTop: 8, fontSize: '0.85rem', color: '#666' }}>
+                {migrationProgress.failed} row(s) did not succeed — open <em>View logs</em> to
+                inspect per-row results, payloads, and API responses.
+              </div>
+            )}
           </div>
         )}
       </div>
