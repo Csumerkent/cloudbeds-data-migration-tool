@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import {
   generateReservationTemplate,
   generateProfilesTemplate,
@@ -99,6 +99,22 @@ function ExcelConfiguration() {
   const [profSummary, setProfSummary] = useState<ValidationResult | null>(null);
   const profInputRef = useRef<HTMLInputElement>(null);
 
+  // Tracks which Failed-records rows are expanded (keyed by rowNumber).
+  // Reset on each new migration so stale expansion doesn't survive into
+  // an unrelated run.
+  const [expandedFailedRows, setExpandedFailedRows] = useState<Set<number>>(new Set());
+  // Whether the "Successful records" collapsible panel is open.
+  const [showSuccessfulRecords, setShowSuccessfulRecords] = useState(false);
+
+  const toggleFailedRow = (rowNumber: number) => {
+    setExpandedFailedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowNumber)) next.delete(rowNumber);
+      else next.add(rowNumber);
+      return next;
+    });
+  };
+
   useEffect(() => {
     persistMigrationState({ resSummary, migrationProgress, migrating });
   }, [resSummary, migrationProgress, migrating]);
@@ -116,6 +132,8 @@ function ExcelConfiguration() {
     // Selecting a new file is one of the only two events that resets results
     // (the other is starting a brand new migration).
     setMigrationProgress(null);
+    setExpandedFailedRows(new Set());
+    setShowSuccessfulRecords(false);
     cancellationRef.current = { cancelled: false };
     persistMigrationState({ resSummary: null, migrationProgress: null, migrating: false });
     if (file) {
@@ -150,6 +168,8 @@ function ExcelConfiguration() {
     // so a previous Stop click can't pre-cancel this run.
     cancellationRef.current = { cancelled: false };
     setMigrationProgress(null);
+    setExpandedFailedRows(new Set());
+    setShowSuccessfulRecords(false);
     const started = Date.now();
     setMigrationStartedAt(started);
     setMigrationElapsedMs(0);
@@ -425,12 +445,172 @@ function ExcelConfiguration() {
                 Migration was stopped. {migrationProgress.total - migrationProgress.completed} row(s) were not processed.
               </div>
             )}
-            {migrationProgress.failed > 0 && !migrating && (
-              <div style={{ marginTop: 8, fontSize: '0.85rem', color: '#666' }}>
-                {migrationProgress.failed} row(s) did not succeed — open <em>View logs</em> to
-                inspect per-row results, payloads, and API responses.
-              </div>
-            )}
+            {/* Failed records — expandable, bound to real MigrationRow
+                data. Columns: expand/Row/Email/Failure Reason. Expanded
+                row reveals the actual API request payload sent and the
+                raw failure response / details returned for that row.
+                No fabricated identifiers anywhere. */}
+            {!migrating && migrationProgress.failed > 0 && (() => {
+              const failedRows = migrationProgress.rows.filter(
+                (r) => r.status === 'failed' || r.status === 'skipped',
+              );
+              return (
+                <div style={{ marginTop: 16 }}>
+                  <h5 style={{ margin: '0 0 6px 0' }}>
+                    Failed records ({failedRows.length})
+                  </h5>
+                  <div className="scrollable-list" style={{ maxHeight: 320 }}>
+                    <table className="compact-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 30 }}></th>
+                          <th style={{ width: 60 }}>Row</th>
+                          <th style={{ width: 220 }}>Email Address</th>
+                          <th>Failure Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {failedRows.map((r) => {
+                          const expanded = expandedFailedRows.has(r.rowNumber);
+                          const email =
+                            r.finalEmail
+                            || r.normalizedEmail
+                            || '(not sent)';
+                          return (
+                            <Fragment key={r.rowNumber}>
+                              <tr
+                                onClick={() => toggleFailedRow(r.rowNumber)}
+                                style={{ cursor: 'pointer' }}
+                                title="Click to toggle payload + response details"
+                              >
+                                <td style={{ textAlign: 'center', fontWeight: 700, color: '#555' }}>
+                                  {expanded ? '\u2212' : '+'}
+                                </td>
+                                <td>{r.rowNumber}</td>
+                                <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{email}</td>
+                                <td>
+                                  <div>{r.message}</div>
+                                  {(r.errorCategory || r.failureStage) && (
+                                    <div style={{ fontSize: '0.72rem', color: '#666', marginTop: 2 }}>
+                                      {(r.errorCategory ?? 'UNKNOWN_ERROR')}
+                                      {' · '}
+                                      {r.failureStage === 'post_api' ? 'after API send' : 'before API send'}
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                              {expanded && (
+                                <tr>
+                                  <td></td>
+                                  <td colSpan={3}>
+                                    <div style={{ padding: '6px 4px', fontSize: '0.75rem' }}>
+                                      <div style={{ marginBottom: 6 }}>
+                                        <strong>Request payload</strong>
+                                        {r.payload ? (
+                                          <pre className="debug-payload" style={{ marginTop: 4 }}>
+                                            {JSON.stringify(r.payload, null, 2)}
+                                          </pre>
+                                        ) : (
+                                          <div style={{ color: '#888', marginTop: 4 }}>
+                                            Payload was not built (request was never sent).
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div style={{ marginBottom: 6 }}>
+                                        <strong>Failure details</strong>
+                                        {r.failureDetails && r.failureDetails.length > 0 ? (
+                                          <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                                            {r.failureDetails.map((d, i) => (
+                                              <li key={i}>{d}</li>
+                                            ))}
+                                          </ul>
+                                        ) : (
+                                          <div style={{ color: '#888', marginTop: 4 }}>
+                                            No structured details captured.
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div>
+                                        <strong>
+                                          API response
+                                          {r.apiHttpStatus != null ? ` (HTTP ${r.apiHttpStatus})` : ''}
+                                        </strong>
+                                        {r.apiResponse != null ? (
+                                          <pre className="debug-payload" style={{ marginTop: 4 }}>
+                                            {typeof r.apiResponse === 'string'
+                                              ? r.apiResponse
+                                              : JSON.stringify(r.apiResponse, null, 2)}
+                                          </pre>
+                                        ) : (
+                                          <div style={{ color: '#888', marginTop: 4 }}>
+                                            No response body captured (row was skipped before sending).
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Successful records — collapsible. Only shows identifiers
+                actually returned by the API: Reservation ID (from
+                reservationID) and Guest ID (from guestID). Fields are
+                omitted when the response didn't carry them; we never
+                synthesize placeholder values. */}
+            {!migrating && migrationProgress.succeeded > 0 && (() => {
+              const okRows = migrationProgress.rows.filter((r) => r.status === 'success');
+              return (
+                <div style={{ marginTop: 16 }}>
+                  <button
+                    type="button"
+                    className="link-button"
+                    style={{ color: '#2e7d32', fontWeight: 600 }}
+                    onClick={() => setShowSuccessfulRecords((v) => !v)}
+                  >
+                    {showSuccessfulRecords ? '\u2212' : '+'} Successful records ({okRows.length})
+                  </button>
+                  {showSuccessfulRecords && (
+                    <div className="scrollable-list" style={{ maxHeight: 320, marginTop: 6 }}>
+                      <table className="compact-table">
+                        <thead>
+                          <tr>
+                            <th style={{ width: 60 }}>Row</th>
+                            <th style={{ width: 160 }}>Reservation ID</th>
+                            <th style={{ width: 120 }}>Guest ID</th>
+                            <th>Email Address</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {okRows.map((r) => (
+                            <tr key={r.rowNumber}>
+                              <td>{r.rowNumber}</td>
+                              <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>
+                                {r.reservationId ?? '—'}
+                              </td>
+                              <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>
+                                {r.guestId ?? '—'}
+                              </td>
+                              <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>
+                                {r.guestEmail ?? r.finalEmail ?? '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>

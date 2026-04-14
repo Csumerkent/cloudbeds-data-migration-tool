@@ -40,6 +40,22 @@ export interface MigrationRow {
   finalEmail?: string;
   reservationId?: string;      // Returned by Cloudbeds on success
   payload?: Record<string, string>; // The API payload sent
+  // Real response fields returned by postReservation on success.
+  // Only set when actually present in the response payload — we never
+  // synthesize placeholder identifiers.
+  guestId?: string;
+  guestEmail?: string;
+  guestFirstName?: string;
+  guestLastName?: string;
+  responseStatus?: string;
+  responseStartDate?: string;
+  responseEndDate?: string;
+  dateCreated?: string;
+  // Raw API response (success or failure body) for the expandable
+  // failed-row detail view. Kept verbatim so the operator sees exactly
+  // what Cloudbeds returned.
+  apiResponse?: unknown;
+  apiHttpStatus?: number;
 }
 
 export interface MigrationProgress {
@@ -877,10 +893,41 @@ export async function migrateReservations(
       });
 
       if (result.ok) {
-        const respData = result.data as { success?: boolean; data?: { reservationID?: string }; message?: string } | null;
+        // Cloudbeds `postReservation` success response embeds the real
+        // identifiers inside `data`. We read them verbatim and never
+        // invent values — anything missing stays undefined so the UI
+        // can simply render nothing.
+        const respData = result.data as {
+          success?: boolean;
+          message?: string;
+          data?: {
+            reservationID?: string | number;
+            guestID?: string | number;
+            guestEmail?: string;
+            guestFirstName?: string;
+            guestLastName?: string;
+            status?: string;
+            startDate?: string;
+            endDate?: string;
+            dateCreated?: string;
+          };
+        } | null;
+        mRow.apiResponse = result.data;
+        mRow.apiHttpStatus = result.status;
         if (respData?.success) {
           mRow.status = 'success';
-          mRow.reservationId = String(respData.data?.reservationID ?? '');
+          const d = respData.data ?? {};
+          const toStr = (v: unknown): string | undefined =>
+            v == null || v === '' ? undefined : String(v);
+          mRow.reservationId = toStr(d.reservationID);
+          mRow.guestId = toStr(d.guestID);
+          mRow.guestEmail = toStr(d.guestEmail);
+          mRow.guestFirstName = toStr(d.guestFirstName);
+          mRow.guestLastName = toStr(d.guestLastName);
+          mRow.responseStatus = toStr(d.status);
+          mRow.responseStartDate = toStr(d.startDate);
+          mRow.responseEndDate = toStr(d.endDate);
+          mRow.dateCreated = toStr(d.dateCreated);
           mRow.message = mRow.reservationId
             ? `Created reservation ${mRow.reservationId}`
             : 'Reservation created';
@@ -918,6 +965,8 @@ export async function migrateReservations(
         mRow.errorCategory = parsedError.category;
         mRow.failureStage = 'post_api';
         mRow.failureDetails = [parsedError.responseSummary, ...parsedError.details];
+        mRow.apiResponse = result.data ?? result.rawText ?? result.error;
+        mRow.apiHttpStatus = result.status;
         progress.failed++;
         warn('Migration', 'http-error', `Row ${mRow.rowNumber}: ${mRow.message}`, {
           rowNumber: mRow.rowNumber,
@@ -943,6 +992,7 @@ export async function migrateReservations(
       mRow.errorCategory = 'UNKNOWN_ERROR';
       mRow.failureStage = 'post_api';
       mRow.failureDetails = [mRow.message];
+      mRow.apiResponse = err instanceof Error ? { name: err.name, message: err.message } : String(err);
       progress.failed++;
       logError('Migration', 'exception', `Row ${mRow.rowNumber}: ${mRow.message}`, {
         rowNumber: mRow.rowNumber,

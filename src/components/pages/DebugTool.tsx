@@ -14,6 +14,22 @@ const ALL_LEVELS: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
 
 type DebugTab = 'all' | 'migration';
 
+// Steps considered per-row spam in the Migration tab only. These are
+// still retained in the underlying log buffer (and visible under All
+// Logs) — we simply hide them from the Reservation Migration view so
+// operators see only the high-signal run timeline (start/complete,
+// validation, summaries, batch boundaries, HTTP/API errors, cancel).
+const MIGRATION_TAB_NOISY_STEPS = new Set<string>([
+  'normalize',      // normalization chatter
+  'resolve',        // resolution chatter
+  'payload',        // payload build chatter
+  'row-summary',    // per-row INFO summary
+  'send',           // raw per-row request payload
+  'response',       // raw per-row HTTP 200 response
+  'success',        // row-by-row success spam
+  'api-error-raw',  // raw failure response dump (the warn summary stays)
+]);
+
 function DebugTool() {
   const [logs, setLogs] = useState<LogEntry[]>(() => [...getLogs()]);
   const [activeTab, setActiveTab] = useState<DebugTab>('all');
@@ -41,9 +57,12 @@ function DebugTool() {
   // Migration-only logs (separate source for the Migration tab).
   // Migration logs are displayed newest-first so the most recent activity
   // (including the final summary) is always visible at the top without
-  // scrolling.
+  // scrolling. Per-row noise (send/response/success/normalize/resolve/
+  // payload/row-summary) is hidden here — All Logs still shows everything.
   const migrationLogs = useMemo(() => {
-    return [...logs].filter((l) => l.module === 'Migration').reverse();
+    return [...logs]
+      .filter((l) => l.module === 'Migration' && !MIGRATION_TAB_NOISY_STEPS.has(l.step))
+      .reverse();
   }, [logs]);
 
   // Base set for current tab
@@ -160,7 +179,10 @@ function DebugTool() {
 
       {activeTab === 'migration' && (
         <div className="config-note config-note--compact">
-          Migration logs: upload, validation, parsing, payload build, resolve, API request/response, row results.
+          Operator-facing Reservation Migration events: migration start/complete,
+          validation, summaries, batch boundaries, HTTP/API errors, cancel.
+          Per-row payload/response/normalization traces are hidden here but
+          remain available under <em>All Logs</em>.
         </div>
       )}
 
