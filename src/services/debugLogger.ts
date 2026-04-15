@@ -4,6 +4,15 @@ import { formatAppDateTimeForLog, getCurrentAppDateTime } from './appDateTimeSer
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
+export interface LogMeta {
+  moduleScope?: string;
+  fileName?: string;
+  jobId?: string;
+  chunkId?: string;
+  rowNumber?: number;
+  logKind?: string;
+}
+
 export interface LogEntry {
   timestamp: string;
   level: LogLevel;
@@ -11,6 +20,7 @@ export interface LogEntry {
   step: string;
   message: string;
   payload?: unknown;
+  meta?: LogMeta;
 }
 
 const logs: LogEntry[] = [];
@@ -19,24 +29,31 @@ function now(): string {
   return formatAppDateTimeForLog(getCurrentAppDateTime());
 }
 
-export function log(level: LogLevel, module: string, step: string, message: string, payload?: unknown): void {
-  logs.push({ timestamp: now(), level, module, step, message, payload });
+export function log(
+  level: LogLevel,
+  module: string,
+  step: string,
+  message: string,
+  payload?: unknown,
+  meta?: LogMeta,
+): void {
+  logs.push({ timestamp: now(), level, module, step, message, payload, meta });
 }
 
-export function debug(module: string, step: string, message: string, payload?: unknown): void {
-  log('DEBUG', module, step, message, payload);
+export function debug(module: string, step: string, message: string, payload?: unknown, meta?: LogMeta): void {
+  log('DEBUG', module, step, message, payload, meta);
 }
 
-export function info(module: string, step: string, message: string, payload?: unknown): void {
-  log('INFO', module, step, message, payload);
+export function info(module: string, step: string, message: string, payload?: unknown, meta?: LogMeta): void {
+  log('INFO', module, step, message, payload, meta);
 }
 
-export function warn(module: string, step: string, message: string, payload?: unknown): void {
-  log('WARN', module, step, message, payload);
+export function warn(module: string, step: string, message: string, payload?: unknown, meta?: LogMeta): void {
+  log('WARN', module, step, message, payload, meta);
 }
 
-export function error(module: string, step: string, message: string, payload?: unknown): void {
-  log('ERROR', module, step, message, payload);
+export function error(module: string, step: string, message: string, payload?: unknown, meta?: LogMeta): void {
+  log('ERROR', module, step, message, payload, meta);
 }
 
 export function getLogs(): LogEntry[] {

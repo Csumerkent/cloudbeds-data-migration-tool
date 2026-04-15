@@ -128,8 +128,10 @@ function ExcelConfiguration() {
           persistMigrationState({ resSummary, migrationProgress: { ...p }, migrating: true });
           setMigrationProgress({ ...p });
         },
-        cancellationRef.current,
-        resSummary,
+        {
+          cancellation: cancellationRef.current,
+          validationResult: resSummary,
+        },
       );
       setMigrationProgress(result);
       persistMigrationState({ resSummary, migrationProgress: result, migrating: false });

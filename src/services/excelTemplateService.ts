@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
-import { normalizeEmail } from './normalizationHelpers';
-import { info, debug, warn, error as logError } from './debugLogger';
+import { normalizeApiDate, normalizeEmail } from './normalizationHelpers';
+import { info, debug, warn, error as logError, type LogMeta } from './debugLogger';
 
 // ---------------------------------------------------------------------------
 // Column definitions
@@ -391,11 +391,12 @@ export function validateSimpleModuleFile(
   file: File,
   expectedSheetName: string,
   requiredHeaders: string[],
+  context?: ValidationContext,
 ): Promise<ValidationResult> {
   info('ExcelValidation', 'start', `Validating module file: ${file.name}`, {
     expectedSheetName,
     requiredHeaders,
-  });
+  }, createValidationMeta(context, { logKind: 'validation' }));
 
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -512,6 +513,23 @@ export interface ValidationResult {
   rowIssues: Record<number, string[]>;
 }
 
+export interface ValidationContext {
+  moduleScope: string;
+  fileName: string;
+  jobId?: string;
+  verboseLogging?: boolean;
+}
+
+function createValidationMeta(context?: ValidationContext, overrides?: Partial<LogMeta>): LogMeta | undefined {
+  if (!context) return overrides;
+  return {
+    moduleScope: context.moduleScope,
+    fileName: context.fileName,
+    jobId: context.jobId,
+    ...overrides,
+  };
+}
+
 /**
  * Parse an uploaded .xlsx file and run first-pass validation.
  * Checks:
@@ -519,14 +537,14 @@ export interface ValidationResult {
  *  - All required columns present
  *  - Required cells not empty (after defaults applied)
  */
-export function validateReservationFile(file: File): Promise<ValidationResult> {
-  info('ExcelValidation', 'start', `Validating file: ${file.name}`);
+export function validateReservationFile(file: File, context?: ValidationContext): Promise<ValidationResult> {
+  info('ExcelValidation', 'start', `Validating file: ${file.name}`, undefined, createValidationMeta(context, { logKind: 'validation' }));
 
   return new Promise((resolve) => {
     const reader = new FileReader();
 
     reader.onerror = () => {
-      logError('ExcelValidation', 'read', 'FileReader error');
+      logError('ExcelValidation', 'read', 'FileReader error', undefined, createValidationMeta(context, { logKind: 'validation' }));
       resolve({
         fileName: file.name,
         totalRows: 0,
@@ -544,14 +562,14 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const wb = XLSX.read(data, { type: 'array' });
 
-        debug('ExcelValidation', 'parse', 'Workbook sheets', { sheets: wb.SheetNames });
+        debug('ExcelValidation', 'parse', 'Workbook sheets', { sheets: wb.SheetNames }, createValidationMeta(context, { logKind: 'validation' }));
 
         // Find Reservations sheet
         const sheetName = wb.SheetNames.find(
           (n) => n.toLowerCase() === 'reservations'
         );
         if (!sheetName) {
-          warn('ExcelValidation', 'parse', 'Reservations sheet not found');
+          warn('ExcelValidation', 'parse', 'Reservations sheet not found', undefined, createValidationMeta(context, { logKind: 'validation' }));
           resolve({
             fileName: file.name,
             totalRows: 0,
@@ -574,7 +592,8 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
           raw: false,
         });
 
-        debug('ExcelValidation', 'parse', 'Parsed rows', { count: rows.length });
+        const verboseLogging = context?.verboseLogging ?? rows.length <= 1000;
+        debug('ExcelValidation', 'parse', 'Parsed rows', { count: rows.length }, createValidationMeta(context, { logKind: 'validation' }));
 
         if (rows.length === 0) {
           resolve({
@@ -597,7 +616,7 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
         );
 
         if (missingCols.length > 0) {
-          warn('ExcelValidation', 'columns', 'Missing required columns', { missingCols });
+          warn('ExcelValidation', 'columns', 'Missing required columns', { missingCols }, createValidationMeta(context, { logKind: 'validation' }));
           resolve({
             fileName: file.name,
             totalRows: rows.length,
@@ -628,29 +647,30 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
           const rowErrors: string[] = [];
 
           // Extract fields
-          const arrival = (row['Arrival *'] ?? '').trim();
-          const departure = (row['Departure *'] ?? '').trim();
+          const arrivalRaw = (row['Arrival *'] ?? '').trim();
+          const departureRaw = (row['Departure *'] ?? '').trim();
           const firstName = (row['First Name *'] ?? '').trim();
           const lastName = (row['Last Name *'] ?? '').trim();
           const roomType = (row['Room Type *'] ?? '').trim();
           const country = (row['Country *'] ?? '').trim();
           const normalizedEmail = normalizeEmail(row['Email *']);
+          const arrival = normalizeApiDate(arrivalRaw);
+          const departure = normalizeApiDate(departureRaw);
           // Email, Adult, Payment Method have defaults — blank is OK, not validated here
 
           // Strictly required — no default
-          if (!arrival) rowErrors.push('Arrival is empty');
-          if (!departure) rowErrors.push('Departure is empty');
+          if (!arrivalRaw) rowErrors.push('Arrival is empty');
+          if (!departureRaw) rowErrors.push('Departure is empty');
           if (!firstName) rowErrors.push('First Name is empty');
           if (!lastName) rowErrors.push('Last Name is empty');
           if (!roomType) rowErrors.push('Room Type is empty');
           if (!country) rowErrors.push('Country is empty');
 
-          // Date format checks
-          if (arrival && !/^\d{4}-\d{2}-\d{2}$/.test(arrival)) {
-            rowErrors.push(`Arrival "${arrival}" is not YYYY-MM-DD`);
+          if (arrivalRaw && !arrival) {
+            rowErrors.push(`Arrival "${arrivalRaw}" could not be normalized`);
           }
-          if (departure && !/^\d{4}-\d{2}-\d{2}$/.test(departure)) {
-            rowErrors.push(`Departure "${departure}" is not YYYY-MM-DD`);
+          if (departureRaw && !departure) {
+            rowErrors.push(`Departure "${departureRaw}" could not be normalized`);
           }
 
           // Departure > Arrival
@@ -662,11 +682,25 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
           // normalizes ISO2 / ISO3 / English / Turkish names to ISO2 (with TR
           // fallback), so this validation no longer rejects non-ISO2 inputs.
 
-          debug('ExcelValidation', 'row', `Row ${rowNum}: validation inspected`, {
-            rowNum,
-            normalizedEmail: normalizedEmail || '(blank)',
-            hasErrors: rowErrors.length > 0,
-          });
+          if (verboseLogging) {
+            debug('ExcelValidation', 'row', `Row ${rowNum}: validation inspected`, {
+              rowNum,
+              arrivalRaw,
+              arrivalNormalized: arrival ?? '(invalid)',
+              departureRaw,
+              departureNormalized: departure ?? '(invalid)',
+              normalizedEmail: normalizedEmail || '(blank)',
+              hasErrors: rowErrors.length > 0,
+            }, createValidationMeta(context, {
+              rowNumber: rowNum,
+              logKind: rowErrors.length > 0 ? 'invalid_row' : 'validation',
+            }));
+          } else if (rowErrors.length > 0) {
+            warn('ExcelValidation', 'row', `Row ${rowNum}: validation failed`, {
+              rowNum,
+              issues: rowErrors,
+            }, createValidationMeta(context, { rowNumber: rowNum, logKind: 'invalid_row' }));
+          }
 
           if (rowErrors.length > 0) {
             invalidCount++;
@@ -697,12 +731,20 @@ export function validateReservationFile(file: File): Promise<ValidationResult> {
           rowIssues,
         };
 
-        info('ExcelValidation', 'complete', `Validation done: ${validCount} valid, ${invalidCount} invalid out of ${rows.length}`);
-        debug('ExcelValidation', 'complete', 'Validation result', result);
+        info(
+          'ExcelValidation',
+          'complete',
+          `Validation done: ${validCount} valid, ${invalidCount} invalid out of ${rows.length}`,
+          { fileName: file.name, validCount, invalidCount, totalRows: rows.length },
+          createValidationMeta(context, { logKind: 'validation' }),
+        );
+        if (verboseLogging) {
+          debug('ExcelValidation', 'complete', 'Validation result', result, createValidationMeta(context, { logKind: 'validation' }));
+        }
 
         resolve(result);
       } catch (err) {
-        logError('ExcelValidation', 'parse', 'Unexpected error during validation', { error: String(err) });
+        logError('ExcelValidation', 'parse', 'Unexpected error during validation', { error: String(err) }, createValidationMeta(context, { logKind: 'validation' }));
         resolve({
           fileName: file.name,
           totalRows: 0,

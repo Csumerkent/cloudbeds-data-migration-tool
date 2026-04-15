@@ -458,3 +458,64 @@
   color: #637d99;
   margin-bottom: 8px;
 }
+
+.section-header-row,
+.execution-progress-header,
+.migration-inline-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summary-link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #115dcf;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.summary-link-button:hover {
+  text-decoration: underline;
+}
+
+.config-section--focused {
+  border-color: rgba(82, 166, 109, 0.45);
+  box-shadow: 0 14px 28px rgba(57, 131, 79, 0.12);
+}
+
+.execution-progress-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.execution-progress-summary__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  color: #49647f;
+  font-size: 0.9rem;
+}
+
+.execution-progress-summary__status {
+  color: #637d99;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.report-table__detail-row td {
+  background: rgba(246, 250, 255, 0.92);
+}
+
+.report-table__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}

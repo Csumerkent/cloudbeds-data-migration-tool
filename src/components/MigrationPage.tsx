@@ -9,14 +9,18 @@ import {
   generateReservationTemplate,
   validateReservationFile,
   validateSimpleModuleFile,
+  type ValidationContext,
   type ValidationResult,
 } from '../services/excelTemplateService';
 import {
   migrateReservations,
   type MigrationCancellation,
   type MigrationProgress,
+  type ReservationMigrationContext,
 } from '../services/reservationMigrationService';
+import { saveMigrationSession } from '../services/migrationSessionService';
 import { info } from '../services/debugLogger';
+import type { NavigationFilters } from '../types/navigation';
 import './pages/pages.css';
 
 type MigrationVariant = 'reservation' | 'reservation-detail' | 'profiles' | 'finance';
@@ -24,7 +28,7 @@ type ReadinessState = 'pending' | 'validated' | 'executing' | 'executed';
 
 interface MigrationPageProps {
   variant: MigrationVariant;
-  onNavigate: (item: SidebarItemId) => void;
+  onNavigate: (item: SidebarItemId, filters?: NavigationFilters) => void;
 }
 
 interface VariantContent {
@@ -32,14 +36,20 @@ interface VariantContent {
   title: string;
   description: string;
   badge: string;
-  moduleName: string;
+  moduleName: 'Reservation' | 'Reservation Detail' | 'Profiles' | 'Finance';
   detailText: string;
   uploadHint: string;
   preparationText: string;
   executionText: string;
   templateAction: () => void;
-  validateAction: (file: File) => Promise<ValidationResult>;
-  executeAction?: (file: File, validation: ValidationResult, onProgress: (progress: MigrationProgress) => void) => Promise<MigrationProgress>;
+  validateAction: (file: File, context?: ValidationContext) => Promise<ValidationResult>;
+  executeAction?: (
+    file: File,
+    validation: ValidationResult,
+    onProgress: (progress: MigrationProgress) => void,
+    context: ReservationMigrationContext,
+    cancellation: MigrationCancellation,
+  ) => Promise<MigrationProgress>;
 }
 
 const VARIANT_CONTENT: Record<MigrationVariant, VariantContent> = {
@@ -53,11 +63,15 @@ const VARIANT_CONTENT: Record<MigrationVariant, VariantContent> = {
     detailText: 'Primary migration flow with the existing reservation template, validation, and Cloudbeds execution logic.',
     uploadHint: 'Review the completed reservation workbook to validate it before execution.',
     preparationText: 'Prepare the reservation workbook here by uploading the selected file and running validation before any execution step.',
-    executionText: 'Execution remains blocked until the uploaded reservation workbook passes validation. Session Log stays available for run visibility.',
+    executionText: 'Execution remains blocked until the uploaded reservation workbook passes validation. Log remains available for run visibility.',
     templateAction: generateReservationTemplate,
     validateAction: validateReservationFile,
-    executeAction: async (file, validation, onProgress) => {
-      return migrateReservations(file, onProgress, { cancelled: false }, validation);
+    executeAction: async (file, validation, onProgress, context, cancellation) => {
+      return migrateReservations(file, onProgress, {
+        validationResult: validation,
+        context,
+        cancellation,
+      });
     },
   },
   'reservation-detail': {
@@ -70,15 +84,15 @@ const VARIANT_CONTENT: Record<MigrationVariant, VariantContent> = {
     detailText: 'Detail records are reviewed through the same three-step action flow for cleaner operator handoff.',
     uploadHint: 'Review a Reservation Detail workbook to confirm the expected worksheet structure and rows.',
     preparationText: 'Upload the reservation detail workbook here and validate that selected file before moving into execution.',
-    executionText: 'Execution opens only after the selected reservation detail workbook is validated. Session Log remains the reporting shortcut.',
+    executionText: 'Execution opens only after the selected reservation detail workbook is validated. Log remains the reporting shortcut.',
     templateAction: generateReservationDetailTemplate,
-    validateAction: (file) =>
+    validateAction: (file, context) =>
       validateSimpleModuleFile(file, 'Reservation Detail', [
         'Reservation Number',
         'Guest Name',
         'Detail Type',
         'Detail Value',
-      ]),
+      ], context),
   },
   profiles: {
     eyebrow: 'Migration / Profiles',
@@ -90,10 +104,10 @@ const VARIANT_CONTENT: Record<MigrationVariant, VariantContent> = {
     detailText: 'Profile execution remains a controlled module, but the operator experience now matches reservation processing.',
     uploadHint: 'Review a Profiles workbook to confirm the expected worksheet structure and rows.',
     preparationText: 'Upload the profiles workbook and validate the currently selected file from this preparation area.',
-    executionText: 'Execution stays gated until the uploaded profiles workbook passes validation. Session Log remains available for follow-up.',
+    executionText: 'Execution stays gated until the uploaded profiles workbook passes validation. Log remains available for follow-up.',
     templateAction: generateProfilesTemplate,
-    validateAction: (file) =>
-      validateSimpleModuleFile(file, 'Profiles', ['First Name *', 'Last Name *', 'Email']),
+    validateAction: (file, context) =>
+      validateSimpleModuleFile(file, 'Profiles', ['First Name *', 'Last Name *', 'Email'], context),
   },
   finance: {
     eyebrow: 'Migration / Finance',
@@ -105,17 +119,29 @@ const VARIANT_CONTENT: Record<MigrationVariant, VariantContent> = {
     detailText: 'Finance migration uses a lighter validation contract today, while preserving the same operator flow as the rest of the app.',
     uploadHint: 'Review a Finance workbook to confirm the expected worksheet structure and rows.',
     preparationText: 'Use this area to upload the finance workbook and validate that selected file before any execution step.',
-    executionText: 'Execution remains blocked until the uploaded finance workbook is validated successfully. Session Log stays here for reporting access.',
+    executionText: 'Execution remains blocked until the uploaded finance workbook is validated successfully. Log stays here for reporting access.',
     templateAction: generateFinanceTemplate,
-    validateAction: (file) =>
+    validateAction: (file, context) =>
       validateSimpleModuleFile(file, 'Finance', [
         'Reservation Number',
         'Profile Number',
         'Charge Code',
         'Amount',
-      ]),
+      ], context),
   },
 };
+
+function createJobId(variant: MigrationVariant): string {
+  return `${variant}-${Date.now()}`;
+}
+
+function formatDuration(durationMs?: number): string {
+  if (!durationMs || durationMs < 0) return '0s';
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
 
 function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
   const content = VARIANT_CONTENT[variant];
@@ -128,6 +154,8 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
   const [preparationMessage, setPreparationMessage] = useState<string>('');
   const [executionMessage, setExecutionMessage] = useState<string>('');
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
+  const [reviewSummaryCollapsed, setReviewSummaryCollapsed] = useState(false);
+  const [jobId, setJobId] = useState(() => createJobId(variant));
 
   useEffect(() => {
     setSelectedFile(null);
@@ -137,6 +165,8 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
     setPreparationMessage('');
     setExecutionMessage('');
     setMigrationProgress(null);
+    setReviewSummaryCollapsed(false);
+    setJobId(createJobId(variant));
   }, [variant]);
 
   const validationSucceeded = !!validationResult && validationResult.invalidRows === 0 && validationResult.validRows > 0;
@@ -155,6 +185,33 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
     return `${validationResult.invalidRows} row(s) need attention`;
   }, [reviewing, selectedFile, validationResult, validationSucceeded]);
 
+  const navigationBase = useMemo<NavigationFilters>(() => ({
+    moduleScope: content.moduleName,
+    fileName: selectedFile?.name,
+    jobId,
+  }), [content.moduleName, jobId, selectedFile?.name]);
+
+  const readinessMessage = useMemo(() => {
+    if (!selectedFile) return 'Upload a file to start review.';
+    if (reviewing) return 'Review in progress.';
+    if (!validationResult) return 'Review the selected file before execution.';
+    if (validationSucceeded) return 'Ready for execution.';
+    return 'Review found issues that must be checked in Log before execution.';
+  }, [reviewing, selectedFile, validationResult, validationSucceeded]);
+
+  const reviewContext = useMemo<ValidationContext>(() => ({
+    moduleScope: content.moduleName,
+    fileName: selectedFile?.name ?? '',
+    jobId,
+  }), [content.moduleName, jobId, selectedFile?.name]);
+
+  const executionContext = useMemo<ReservationMigrationContext>(() => ({
+    moduleScope: content.moduleName,
+    fileName: selectedFile?.name ?? '',
+    jobId,
+    verboseLogging: (validationResult?.totalRows ?? 0) <= 1000,
+  }), [content.moduleName, jobId, selectedFile?.name, validationResult?.totalRows]);
+
   const handleDownloadTemplate = () => {
     content.templateAction();
   };
@@ -163,16 +220,27 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
     fileInputRef.current?.click();
   };
 
+  const handleOpenLogs = (extraFilters?: NavigationFilters) => {
+    onNavigate('logs', {
+      ...navigationBase,
+      ...extraFilters,
+    });
+  };
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
 
+    const nextJobId = createJobId(variant);
+    setJobId(nextJobId);
     setSelectedFile(file);
     setPreparationMessage(`${file.name} uploaded. Review file to validate this selection.`);
     setValidationResult(null);
     setMigrationProgress(null);
     setExecutionMessage('');
     setReadinessState('pending');
+    setReviewSummaryCollapsed(false);
+    cancellationRef.current = { cancelled: false };
 
     event.target.value = '';
   };
@@ -190,18 +258,33 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
     setExecutionMessage('');
     setReadinessState('pending');
 
-    const result = await content.validateAction(selectedFile);
+    const result = await content.validateAction(selectedFile, {
+      ...reviewContext,
+      fileName: selectedFile.name,
+    });
     setValidationResult(result);
     setReviewing(false);
 
     const validated = result.invalidRows === 0 && result.validRows > 0;
     setReadinessState(validated ? 'validated' : 'pending');
+    setReviewSummaryCollapsed(validated);
     setPreparationMessage(
       validated
         ? `${selectedFile.name} reviewed successfully and is ready for execution.`
-        : `${selectedFile.name} has validation issues that must be fixed before execution.`,
+        : `${selectedFile.name} has validation issues that should be reviewed in Log before execution.`,
     );
-    info(content.moduleName, 'review-file', validated ? 'File review completed successfully' : 'File review found issues', result);
+    info(
+      content.moduleName,
+      'review-file',
+      validated ? 'File review completed successfully' : 'File review found issues',
+      result,
+      {
+        moduleScope: content.moduleName,
+        fileName: selectedFile.name,
+        jobId,
+        logKind: validated ? 'validation' : 'invalid_row',
+      },
+    );
   };
 
   const handleExecute = async () => {
@@ -220,9 +303,15 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
 
     if (content.executeAction) {
       cancellationRef.current = { cancelled: false };
-      const progress = await content.executeAction(selectedFile, validationResult, (nextProgress) => {
-        setMigrationProgress({ ...nextProgress });
-      });
+      const progress = await content.executeAction(
+        selectedFile,
+        validationResult,
+        (nextProgress) => {
+          setMigrationProgress({ ...nextProgress });
+        },
+        executionContext,
+        cancellationRef.current,
+      );
       setMigrationProgress(progress);
       setReadinessState('executed');
       setExecutionMessage(
@@ -230,6 +319,9 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
           ? `${progress.succeeded} rows executed successfully, ${progress.failed} failed.`
           : `Execution completed successfully for ${progress.succeeded} row(s).`,
       );
+      if (content.moduleName === 'Reservation') {
+        saveMigrationSession(content.moduleName, selectedFile.name, progress);
+      }
       return;
     }
 
@@ -239,8 +331,20 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
     info(content.moduleName, 'execute', 'Module execution triggered after validation', {
       fileName: selectedFile.name,
       validationResult,
+    }, {
+      moduleScope: content.moduleName,
+      fileName: selectedFile.name,
+      jobId,
+      logKind: 'migration',
     });
   };
+
+  const reviewRows = [
+    { label: 'Selected file', value: selectedFile?.name ?? 'No file selected' },
+    { label: 'Valid rows', value: validationResult ? String(validationResult.validRows) : '-' },
+    { label: 'Invalid rows', value: validationResult ? String(validationResult.invalidRows) : '-' },
+    { label: 'Readiness', value: readinessMessage },
+  ];
 
   return (
     <PageShell
@@ -253,13 +357,13 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
         { label: 'Current file', value: selectedFile?.name ?? 'No file selected' },
         { label: 'Review status', value: reviewStatusText },
       ]}
-      actions={
+      actions={(
         <div className="page-shell__toolbar">
           <button type="button" className="btn btn-primary" onClick={handleDownloadTemplate}>
             Download template
           </button>
         </div>
-      }
+      )}
     >
       <input
         ref={fileInputRef}
@@ -288,17 +392,6 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
               <div className={`status-area status-area--${validationSucceeded ? 'success' : 'idle'}`}>
                 {preparationMessage}
               </div>
-            ) : validationResult ? (
-              <div className="migration-module__summary">
-                <div>
-                  <strong>{validationResult.validRows}</strong>
-                  <span>Valid rows</span>
-                </div>
-                <div>
-                  <strong>{validationResult.invalidRows}</strong>
-                  <span>Invalid rows</span>
-                </div>
-              </div>
             ) : (
               <p className="migration-module__hint">{content.uploadHint}</p>
             )
@@ -309,76 +402,97 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
           icon="chart"
           title="Execution Readiness"
           description={content.executionText}
+          badge={validationSucceeded ? 'Ready Focus' : undefined}
           stats={[
             { label: 'Validation gate', value: validationSucceeded ? 'Passed' : 'Blocked' },
-            { label: 'Execution state', value: readinessState === 'executed' ? 'Started' : readinessState === 'executing' ? 'Running' : 'Waiting' },
-            { label: 'Session access', value: 'Session Log available' },
+            { label: 'Execution state', value: readinessState === 'executed' ? 'Completed' : readinessState === 'executing' ? 'Running' : validationSucceeded ? 'Ready' : 'Waiting' },
+            { label: 'Log access', value: 'Filtered log available' },
           ]}
-          footer={
+          footer={(
             <div className="migration-module__footer-stack">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onNavigate('reporting')}
-              >
-                Session Log
-              </button>
-              <button
-                type="button"
-                className={`btn ${readinessTone}`}
-                onClick={handleExecute}
-                disabled={readinessState === 'executing' || !validationSucceeded}
-              >
-                {readinessLabel}
-              </button>
+              {validationSucceeded ? (
+                <div className="status-area status-area--success">
+                  Review is complete. Execution is now the active step.
+                </div>
+              ) : null}
+              <div className="migration-inline-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => handleOpenLogs({ migrationLogsOnly: true })}
+                >
+                  Open Log
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${readinessTone}`}
+                  onClick={handleExecute}
+                  disabled={readinessState === 'executing' || !validationSucceeded}
+                >
+                  {readinessLabel}
+                </button>
+              </div>
               {executionMessage ? <div className="status-area status-area--idle">{executionMessage}</div> : null}
             </div>
-          }
+          )}
         />
       </div>
 
-      {validationResult ? (
-        <section className="config-section">
-          <h4>Review Results</h4>
-          <dl className="summary-grid">
-            <div>
-              <dt>File name</dt>
-              <dd>{validationResult.fileName}</dd>
-            </div>
-            <div>
-              <dt>Total rows</dt>
-              <dd>{validationResult.totalRows}</dd>
-            </div>
-            <div>
-              <dt>Valid rows</dt>
-              <dd>{validationResult.validRows}</dd>
-            </div>
-            <div>
-              <dt>Invalid rows</dt>
-              <dd>{validationResult.invalidRows}</dd>
-            </div>
-          </dl>
+      {(selectedFile || validationResult) ? (
+        <section className={`config-section ${validationSucceeded ? 'config-section--focused' : ''}`}>
+          <div className="section-header-row">
+            <h4>Review Summary</h4>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setReviewSummaryCollapsed((current) => !current)}
+            >
+              {reviewSummaryCollapsed ? 'Expand' : 'Collapse'}
+            </button>
+          </div>
 
-          {validationResult.errors.length > 0 ? (
-            <div className="excel-errors">
-              <strong>Review notes</strong>
-              <ul className="error-list">
-                {validationResult.errors.map((error, index) => (
-                  <li key={`${error}-${index}`}>{error}</li>
-                ))}
-              </ul>
+          {reviewSummaryCollapsed ? (
+            <div className="status-area status-area--idle">
+              Review summary is collapsed. {validationSucceeded ? 'All reviewed rows are valid.' : 'Expand to inspect counts and readiness.'}
             </div>
           ) : (
-            <div className="status-area status-area--success">
-              Review completed successfully. The module is ready for execution.
-            </div>
+            <dl className="summary-grid">
+              {reviewRows.map((row) => (
+                <div key={row.label}>
+                  <dt>{row.label}</dt>
+                  <dd>
+                    {row.label === 'Invalid rows' && validationResult && validationResult.invalidRows > 0 ? (
+                      <button
+                        type="button"
+                        className="summary-link-button"
+                        onClick={() => handleOpenLogs({ invalidRowsOnly: true })}
+                      >
+                        {row.value}
+                      </button>
+                    ) : (
+                      row.value
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           )}
         </section>
       ) : null}
 
       {migrationProgress ? (
         <section className="config-section">
-          <h4>Execution Progress</h4>
+          <div className="execution-progress-header">
+            <h4>Execution Progress</h4>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => handleOpenLogs({ migrationLogsOnly: true })}
+            >
+              Open Log
+            </button>
+          </div>
+
           <div className="migration-progress-bar-bg">
             <div
               className="migration-progress-bar-fill"
@@ -389,28 +503,21 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
               }}
             />
           </div>
-          <div className="migration-progress-text">
-            {migrationProgress.completed} / {migrationProgress.total} row(s) processed
-          </div>
-          <div className="scrollable-list" style={{ maxHeight: 320 }}>
-            <table className="compact-table">
-              <thead>
-                <tr>
-                  <th>Row</th>
-                  <th>Status</th>
-                  <th>Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {migrationProgress.rows.map((row) => (
-                  <tr key={row.rowNumber}>
-                    <td>{row.rowNumber}</td>
-                    <td>{row.status}</td>
-                    <td>{row.message}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+          <div className="execution-progress-summary">
+            <div className="execution-progress-summary__stats">
+              <span><strong>{migrationProgress.completed}</strong> processed</span>
+              <span><strong>{migrationProgress.succeeded}</strong> succeeded</span>
+              <span><strong>{migrationProgress.failed}</strong> failed</span>
+              <span><strong>{formatDuration(migrationProgress.durationMs)}</strong> batch duration</span>
+            </div>
+            <div className="execution-progress-summary__status">
+              {migrationProgress.stopped
+                ? 'Stopped by user'
+                : migrationProgress.completed === migrationProgress.total
+                  ? 'Execution complete'
+                  : 'Execution running'}
+            </div>
           </div>
         </section>
       ) : null}

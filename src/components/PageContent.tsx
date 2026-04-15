@@ -8,13 +8,15 @@ import MigrationPage from './MigrationPage';
 import PageShell from './PageShell';
 import ReportingSession from './ReportingSession';
 import type { SidebarItemId } from './Sidebar';
+import type { NavigationFilters } from '../types/navigation';
 
 interface PageContentProps {
   page: SidebarItemId;
-  onNavigate: (item: SidebarItemId) => void;
+  onNavigate: (item: SidebarItemId, filters?: NavigationFilters) => void;
+  navigationFilters: NavigationFilters;
 }
 
-function PageContent({ page, onNavigate }: PageContentProps) {
+function PageContent({ page, onNavigate, navigationFilters }: PageContentProps) {
   switch (page) {
     case 'api-config':
       return (
@@ -69,7 +71,7 @@ function PageContent({ page, onNavigate }: PageContentProps) {
     case 'finance':
       return <MigrationPage variant="finance" onNavigate={onNavigate} />;
     case 'reporting':
-      return <ReportingSession />;
+      return <ReportingSession navigationFilters={navigationFilters} />;
     case 'logs':
       return (
         <PageShell
@@ -78,7 +80,7 @@ function PageContent({ page, onNavigate }: PageContentProps) {
           description="Search technical traces and migration events when operators need visibility into validation, execution, and runtime issues."
           badge="Troubleshooting"
         >
-          <DebugTool />
+          <DebugTool navigationFilters={navigationFilters} />
         </PageShell>
       );
     case 'system':

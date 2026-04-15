@@ -360,3 +360,141 @@ export function normalizeRateKey(raw: string | null | undefined): string {
     .trim()
     .replace(/[\s_\-]+/g, '');
 }
+
+// ===========================================================================
+// Date / time
+// ===========================================================================
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function isValidDateParts(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
+function excelSerialToDate(serial: number): Date | null {
+  if (!Number.isFinite(serial)) return null;
+  const wholeDays = Math.floor(serial);
+  if (wholeDays <= 0) return null;
+  const epoch = Date.UTC(1899, 11, 30);
+  const milliseconds = wholeDays * 86400000;
+  const timeFraction = serial - wholeDays;
+  return new Date(epoch + milliseconds + Math.round(timeFraction * 86400000));
+}
+
+function parseSlashDate(raw: string): { year: number; month: number; day: number } | null {
+  const match = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return null;
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  const year = Number(match[3]);
+
+  if (first > 12 && second <= 12) {
+    return isValidDateParts(year, second, first) ? { year, month: second, day: first } : null;
+  }
+  if (second > 12 && first <= 12) {
+    return isValidDateParts(year, first, second) ? { year, month: first, day: second } : null;
+  }
+  if (first > 12 || second > 12 || first === second) {
+    return null;
+  }
+  return null;
+}
+
+function formatDate(date: Date): string {
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+function formatDateTime(date: Date): string {
+  return date.toISOString();
+}
+
+function formatTime(date: Date): string {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function parseDateLike(raw: string | number | null | undefined): Date | null {
+  if (raw == null) return null;
+
+  if (typeof raw === 'number') {
+    return excelSerialToDate(raw);
+  }
+
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return excelSerialToDate(Number(trimmed));
+  }
+
+  const isoDate = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDate) {
+    const year = Number(isoDate[1]);
+    const month = Number(isoDate[2]);
+    const day = Number(isoDate[3]);
+    if (!isValidDateParts(year, month, day)) return null;
+    return new Date(Date.UTC(year, month - 1, day));
+  }
+
+  const isoDateTime = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (isoDateTime) {
+    const year = Number(isoDateTime[1]);
+    const month = Number(isoDateTime[2]);
+    const day = Number(isoDateTime[3]);
+    const hour = Number(isoDateTime[4]);
+    const minute = Number(isoDateTime[5]);
+    const second = Number(isoDateTime[6] ?? '0');
+    if (!isValidDateParts(year, month, day) || hour > 23 || minute > 59 || second > 59) return null;
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  }
+
+  const slashDate = parseSlashDate(trimmed);
+  if (slashDate) {
+    return new Date(Date.UTC(slashDate.year, slashDate.month - 1, slashDate.day));
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function normalizeApiDate(raw: string | number | null | undefined): string | null {
+  const parsed = parseDateLike(raw);
+  return parsed ? formatDate(parsed) : null;
+}
+
+export function normalizeApiDateTime(raw: string | number | null | undefined): string | null {
+  const parsed = parseDateLike(raw);
+  return parsed ? formatDateTime(parsed) : null;
+}
+
+export function normalizeApiTime(raw: string | number | null | undefined): string | null {
+  if (raw == null) return null;
+
+  if (typeof raw === 'number') {
+    const hours = Math.floor(raw * 24);
+    const minutes = Math.round((raw * 24 - hours) * 60);
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+    return `${pad(hours)}:${pad(minutes)}:00`;
+  }
+
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+
+  const direct = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (direct) {
+    const hour = Number(direct[1]);
+    const minute = Number(direct[2]);
+    const second = Number(direct[3] ?? '0');
+    if (hour > 23 || minute > 59 || second > 59) return null;
+    return `${pad(hour)}:${pad(minute)}`;
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : formatTime(parsed);
+}

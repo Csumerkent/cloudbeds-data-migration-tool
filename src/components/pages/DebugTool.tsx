@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getLogs, clearLogs, getModules, type LogEntry, type LogLevel } from '../../services/debugLogger';
+import type { NavigationFilters } from '../../types/navigation';
 import './pages.css';
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -10,26 +11,70 @@ const LEVEL_COLORS: Record<string, string> = {
 };
 
 const ALL_LEVELS: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+const NOISY_MIGRATION_KINDS = new Set(['payload', 'api_response', 'row_success', 'normalization']);
 
 type DebugTab = 'all' | 'migration';
 
-function DebugTool() {
+interface DebugToolProps {
+  navigationFilters: NavigationFilters;
+}
+
+function isMigrationEntry(entry: LogEntry): boolean {
+  return entry.module === 'Migration'
+    || entry.module === 'ExcelValidation'
+    || entry.meta?.logKind === 'migration'
+    || entry.meta?.logKind === 'validation'
+    || entry.meta?.logKind === 'invalid_row'
+    || entry.meta?.logKind === 'execution_summary';
+}
+
+function matchesNavigationFilters(entry: LogEntry, filters: NavigationFilters, activeTab: DebugTab): boolean {
+  if (filters.moduleScope) {
+    const moduleMatch = entry.meta?.moduleScope === filters.moduleScope || entry.module === filters.moduleScope;
+    if (!moduleMatch) return false;
+  }
+
+  if (filters.fileName && entry.meta?.fileName !== filters.fileName) {
+    return false;
+  }
+
+  if (filters.jobId && entry.meta?.jobId !== filters.jobId) {
+    return false;
+  }
+
+  if (filters.chunkId && entry.meta?.chunkId !== filters.chunkId) {
+    return false;
+  }
+
+  if (filters.invalidRowsOnly) {
+    const invalidMatch = entry.meta?.logKind === 'invalid_row'
+      || (typeof entry.meta?.rowNumber === 'number' && entry.level !== 'INFO');
+    if (!invalidMatch) return false;
+  }
+
+  if (activeTab === 'migration' && entry.meta?.moduleScope === 'Reservation' && NOISY_MIGRATION_KINDS.has(entry.meta?.logKind ?? '')) {
+    return false;
+  }
+
+  return true;
+}
+
+function DebugTool({ navigationFilters }: DebugToolProps) {
   const [logs, setLogs] = useState<LogEntry[]>(() => [...getLogs()]);
-  const [activeTab, setActiveTab] = useState<DebugTab>('all');
+  const [activeTab, setActiveTab] = useState<DebugTab>(navigationFilters.migrationLogsOnly ? 'migration' : 'all');
   const [levelFilter, setLevelFilter] = useState<LogLevel | 'ALL'>('ALL');
   const [moduleFilter, setModuleFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-  // Migration-only logs (separate source for the Migration tab).
-  // Migration logs are displayed newest-first so the most recent activity
-  // (including the final summary) is always visible at the top without
-  // scrolling.
+  useEffect(() => {
+    setActiveTab(navigationFilters.migrationLogsOnly ? 'migration' : 'all');
+  }, [navigationFilters.migrationLogsOnly]);
+
   const migrationLogs = useMemo(() => {
-    return [...logs].filter((l) => l.module === 'Migration').reverse();
+    return [...logs].filter(isMigrationEntry).reverse();
   }, [logs]);
 
-  // Base set for current tab
   const baseLogs = activeTab === 'migration' ? migrationLogs : logs;
 
   const modules = useMemo(() => {
@@ -39,11 +84,10 @@ function DebugTool() {
   }, [logs]);
 
   const filtered = useMemo(() => {
-    let result = baseLogs;
+    let result = baseLogs.filter((entry) => matchesNavigationFilters(entry, navigationFilters, activeTab));
     if (levelFilter !== 'ALL') {
       result = result.filter((l) => l.level === levelFilter);
     }
-    // Module filter only applies on All tab
     if (activeTab === 'all' && moduleFilter !== 'ALL') {
       result = result.filter((l) => l.module === moduleFilter);
     }
@@ -54,11 +98,12 @@ function DebugTool() {
           l.message.toLowerCase().includes(lower) ||
           l.step.toLowerCase().includes(lower) ||
           l.module.toLowerCase().includes(lower) ||
+          JSON.stringify(l.meta ?? {}).toLowerCase().includes(lower) ||
           (l.payload && JSON.stringify(l.payload).toLowerCase().includes(lower)),
       );
     }
     return result;
-  }, [baseLogs, activeTab, levelFilter, moduleFilter, search]);
+  }, [activeTab, baseLogs, levelFilter, moduleFilter, navigationFilters, search]);
 
   const handleRefresh = () => {
     setLogs([...getLogs()]);
@@ -104,22 +149,25 @@ function DebugTool() {
   const switchTab = (tab: DebugTab) => {
     setActiveTab(tab);
     setExpandedRows(new Set());
-    // Reset module filter when switching to Migration tab
     if (tab === 'migration') {
       setModuleFilter('ALL');
     }
   };
 
   const migrationCount = migrationLogs.length;
-
-  // Determine which columns to show based on tab
   const showModule = activeTab === 'all';
+  const hasFocusedNavigation = !!(
+    navigationFilters.moduleScope
+    || navigationFilters.fileName
+    || navigationFilters.jobId
+    || navigationFilters.invalidRowsOnly
+    || navigationFilters.migrationLogsOnly
+  );
 
   return (
     <div className="config-page" style={{ maxWidth: 1100 }}>
       <h3>Debug Tool</h3>
 
-      {/* Tab bar */}
       <div className="debug-tabs">
         <button
           className={`debug-tab${activeTab === 'all' ? ' debug-tab--active' : ''}`}
@@ -135,6 +183,15 @@ function DebugTool() {
         </button>
       </div>
 
+      {hasFocusedNavigation ? (
+        <div className="config-note config-note--compact">
+          Filtered view: {navigationFilters.moduleScope ?? 'All modules'}
+          {navigationFilters.fileName ? ` / ${navigationFilters.fileName}` : ''}
+          {navigationFilters.invalidRowsOnly ? ' / invalid rows only' : ''}
+          {navigationFilters.migrationLogsOnly ? ' / migration logs only' : ''}
+        </div>
+      ) : null}
+
       {activeTab === 'all' && (
         <div className="config-note config-note--compact">
           Session-based debug log. Entries are in memory only and reset on app close.
@@ -143,11 +200,10 @@ function DebugTool() {
 
       {activeTab === 'migration' && (
         <div className="config-note config-note--compact">
-          Migration logs: upload, validation, parsing, payload build, resolve, API request/response, row results.
+          Migration logs focus on validation summaries, invalid rows, batch progress, execution stops, errors, and final summaries.
         </div>
       )}
 
-      {/* Controls */}
       <div className="debug-controls">
         <button className="btn btn-primary" onClick={handleRefresh}>Refresh</button>
         <button className="btn btn-secondary" onClick={handleClear}>Clear</button>
@@ -185,7 +241,6 @@ function DebugTool() {
         <span className="debug-count">{filtered.length} / {baseLogs.length}</span>
       </div>
 
-      {/* Log table */}
       {filtered.length === 0 ? (
         <div className="status-area status-area--idle">No log entries match.</div>
       ) : (
@@ -214,6 +269,9 @@ function DebugTool() {
                     <td style={{ fontSize: '0.78rem', color: '#666' }}>{entry.step}</td>
                     <td style={{ fontSize: '0.78rem' }}>
                       {entry.message}
+                      {entry.meta?.rowNumber ? (
+                        <span className="debug-payload-hint"> [row {entry.meta.rowNumber}]</span>
+                      ) : null}
                       {isExpanded && hasPayload && (
                         <pre className="debug-payload">{JSON.stringify(entry.payload, null, 2)}</pre>
                       )}

@@ -8,6 +8,7 @@ import Sidebar, {
   type SidebarItemId,
 } from '../components/Sidebar';
 import PageContent from '../components/PageContent';
+import type { NavigationFilters } from '../types/navigation';
 import '../components/Sidebar.css';
 import './App.css';
 
@@ -52,6 +53,7 @@ const DEFAULT_EXPANDED_GROUPS: Record<SidebarGroupId, boolean> = {
 
 function App() {
   const [activePage, setActivePage] = useState<SidebarItemId>('api-config');
+  const [navigationFilters, setNavigationFilters] = useState<NavigationFilters>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<SidebarGroupId, boolean>>(DEFAULT_EXPANDED_GROUPS);
   const [openMenu, setOpenMenu] = useState<AppMenuKey | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
@@ -116,8 +118,9 @@ function App() {
     return group?.label ?? 'Workspace';
   }, [activePage]);
 
-  const handleSidebarSelect = (item: SidebarItemId) => {
+  const handleSidebarSelect = (item: SidebarItemId, filters?: NavigationFilters) => {
     setActivePage(item);
+    setNavigationFilters(filters ?? {});
   };
 
   const handleToggleGroup = (group: SidebarGroupId) => {
@@ -237,11 +240,15 @@ function App() {
         <Sidebar
           active={activePage}
           expandedGroups={expandedGroups}
-          onSelect={handleSidebarSelect}
+          onSelect={(item) => handleSidebarSelect(item)}
           onToggleGroup={handleToggleGroup}
         />
         <main className="workspace__main">
-          <PageContent page={activePage} onNavigate={handleSidebarSelect} />
+          <PageContent
+            page={activePage}
+            onNavigate={handleSidebarSelect}
+            navigationFilters={navigationFilters}
+          />
         </main>
       </div>
     </div>
