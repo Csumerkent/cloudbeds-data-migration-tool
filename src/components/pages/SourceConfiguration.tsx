@@ -176,6 +176,24 @@ function SourceConfiguration() {
         later use, but it is currently inactive in reservation migration.
       </div>
 
+      <button
+        className="btn btn-primary"
+        onClick={handleGetSources}
+        disabled={loadStatus === 'loading'}
+        style={{ marginTop: 8 }}
+      >
+        {loadStatus === 'loading' ? 'Fetching...' : 'Get Sources'}
+      </button>
+
+      {statusMessage && (
+        <div
+          className={`status-area status-area--${loadStatus === 'loading' ? 'idle' : loadStatus}`}
+          style={{ marginTop: 8 }}
+        >
+          {statusMessage}
+        </div>
+      )}
+
       <div className="config-section config-section--compact">
         <h4>Old Reservations</h4>
         <div className="config-row config-row--tight">
@@ -216,23 +234,6 @@ function SourceConfiguration() {
           </div>
         </div>
       </div>
-
-      <button
-        className="btn btn-primary"
-        onClick={handleGetSources}
-        disabled={loadStatus === 'loading'}
-      >
-        {loadStatus === 'loading' ? 'Fetching...' : 'Get Sources'}
-      </button>
-
-      {statusMessage && (
-        <div
-          className={`status-area status-area--${loadStatus === 'loading' ? 'idle' : loadStatus}`}
-          style={{ marginTop: 8 }}
-        >
-          {statusMessage}
-        </div>
-      )}
 
       {loadStatus === 'success' && sourceRows.length === 0 && (
         <div className="status-area status-area--idle" style={{ marginTop: 12 }}>

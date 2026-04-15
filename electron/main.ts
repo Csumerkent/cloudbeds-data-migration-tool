@@ -1,10 +1,17 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'node:path';
 
 const DIST = path.join(__dirname, '../dist');
 const DIST_ELECTRON = path.join(__dirname);
 
 let mainWindow: BrowserWindow | null = null;
+
+function sendWindowState() {
+  if (!mainWindow) return;
+  mainWindow.webContents.send('window-state-changed', {
+    isMaximized: mainWindow.isMaximized(),
+  });
+}
 
 async function parseResponseBody(response: Response): Promise<{ data: unknown; rawText?: string }> {
   const rawText = await response.text();
@@ -23,13 +30,20 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    minWidth: 1100,
+    minHeight: 760,
     title: 'Cloudbeds Data Migration Tool',
+    frame: false,
+    titleBarStyle: 'hidden',
+    backgroundColor: '#d8e8ff',
     webPreferences: {
       preload: path.join(DIST_ELECTRON, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+
+  mainWindow.removeMenu();
 
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -40,7 +54,94 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  mainWindow.on('maximize', sendWindowState);
+  mainWindow.on('unmaximize', sendWindowState);
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    sendWindowState();
+  });
 }
+
+ipcMain.handle('menu-action', async (_event, action: string) => {
+  if (!mainWindow) return { ok: false };
+
+  switch (action) {
+    case 'file:reload-app':
+      mainWindow.webContents.reloadIgnoringCache();
+      return { ok: true };
+    case 'file:exit-app':
+      app.quit();
+      return { ok: true };
+    case 'file:close':
+      mainWindow.close();
+      return { ok: true };
+    case 'edit:undo':
+      mainWindow.webContents.undo();
+      return { ok: true };
+    case 'edit:redo':
+      mainWindow.webContents.redo();
+      return { ok: true };
+    case 'edit:cut':
+      mainWindow.webContents.cut();
+      return { ok: true };
+    case 'edit:copy':
+      mainWindow.webContents.copy();
+      return { ok: true };
+    case 'edit:paste':
+      mainWindow.webContents.paste();
+      return { ok: true };
+    case 'view:reload':
+      mainWindow.webContents.reload();
+      return { ok: true };
+    case 'view:toggle-devtools':
+      mainWindow.webContents.toggleDevTools();
+      return { ok: true };
+    case 'window:minimize':
+      mainWindow.minimize();
+      return { ok: true };
+    case 'window:toggle-maximize':
+      if (mainWindow.isMaximized()) {
+        mainWindow.unmaximize();
+      } else {
+        mainWindow.maximize();
+      }
+      return { ok: true };
+    case 'help:cloudbeds':
+      await shell.openExternal('https://www.cloudbeds.com/');
+      return { ok: true };
+    default:
+      return { ok: false };
+  }
+});
+
+ipcMain.handle('window-action', async (_event, action: 'minimize' | 'toggle-maximize' | 'close') => {
+  if (!mainWindow) {
+    return { ok: false, isMaximized: false };
+  }
+
+  if (action === 'minimize') {
+    mainWindow.minimize();
+  } else if (action === 'toggle-maximize') {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  } else if (action === 'close') {
+    mainWindow.close();
+  }
+
+  return { ok: true, isMaximized: mainWindow.isMaximized() };
+});
+
+ipcMain.handle('window-state', async () => {
+  if (!mainWindow) {
+    return { isMaximized: false };
+  }
+
+  return { isMaximized: mainWindow.isMaximized() };
+});
 
 // IPC: Test main Cloudbeds API connection
 ipcMain.handle(

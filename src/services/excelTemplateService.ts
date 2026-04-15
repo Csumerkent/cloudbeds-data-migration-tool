@@ -326,6 +326,177 @@ export function generateProfilesTemplate(): void {
   info('ExcelTemplate', 'generate', 'Profiles template downloaded (placeholder)');
 }
 
+function generateSimpleModuleTemplate(
+  fileName: string,
+  title: string,
+  sheetName: string,
+  headers: string[],
+  exampleRows: Array<Record<string, string>>,
+): void {
+  const wb = XLSX.utils.book_new();
+  const instructionSheet = XLSX.utils.aoa_to_sheet([
+    [title],
+    [],
+    ['Use this worksheet as the starting point for the migration module.'],
+    ['Populate the sheet below and return to the application to review the file before executing.'],
+  ]);
+  instructionSheet['!cols'] = [{ wch: 84 }];
+  XLSX.utils.book_append_sheet(wb, instructionSheet, 'Instructions');
+
+  const dataRows = exampleRows.map((row) => headers.map((header) => row[header] ?? ''));
+  const dataSheet = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+  dataSheet['!cols'] = headers.map((header) => ({ wch: Math.max(header.length + 4, 18) }));
+  XLSX.utils.book_append_sheet(wb, dataSheet, sheetName);
+
+  XLSX.writeFile(wb, fileName);
+}
+
+export function generateReservationDetailTemplate(): void {
+  info('ExcelTemplate', 'generate', 'Generating reservation detail template');
+  generateSimpleModuleTemplate(
+    'cloudbeds-reservation-detail-template.xlsx',
+    'Cloudbeds Reservation Detail Migration Template',
+    'Reservation Detail',
+    ['Reservation Number', 'Guest Name', 'Detail Type', 'Detail Value'],
+    [
+      {
+        'Reservation Number': 'CBR-10001',
+        'Guest Name': 'John Doe',
+        'Detail Type': 'Special Request',
+        'Detail Value': 'Late arrival',
+      },
+    ],
+  );
+}
+
+export function generateFinanceTemplate(): void {
+  info('ExcelTemplate', 'generate', 'Generating finance template');
+  generateSimpleModuleTemplate(
+    'cloudbeds-finance-template.xlsx',
+    'Cloudbeds Finance Migration Template',
+    'Finance',
+    ['Reservation Number', 'Profile Number', 'Charge Code', 'Amount'],
+    [
+      {
+        'Reservation Number': 'CBR-10001',
+        'Profile Number': 'PF-22001',
+        'Charge Code': 'ROOM',
+        Amount: '149.00',
+      },
+    ],
+  );
+}
+
+export function validateSimpleModuleFile(
+  file: File,
+  expectedSheetName: string,
+  requiredHeaders: string[],
+): Promise<ValidationResult> {
+  info('ExcelValidation', 'start', `Validating module file: ${file.name}`, {
+    expectedSheetName,
+    requiredHeaders,
+  });
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+
+    reader.onerror = () => {
+      resolve({
+        fileName: file.name,
+        totalRows: 0,
+        validRows: 0,
+        invalidRows: 0,
+        errors: ['Failed to read the file. Please check the file and try again.'],
+        validRowNumbers: [],
+        invalidRowNumbers: [],
+        rowIssues: {},
+      });
+    };
+
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const wb = XLSX.read(data, { type: 'array' });
+        const sheetName = wb.SheetNames.find((name) => name.toLowerCase() === expectedSheetName.toLowerCase());
+
+        if (!sheetName) {
+          resolve({
+            fileName: file.name,
+            totalRows: 0,
+            validRows: 0,
+            invalidRows: 0,
+            errors: [`Sheet "${expectedSheetName}" not found.`],
+            validRowNumbers: [],
+            invalidRowNumbers: [],
+            rowIssues: {},
+          });
+          return;
+        }
+
+        const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {
+          defval: '',
+          raw: false,
+        });
+
+        if (rows.length === 0) {
+          resolve({
+            fileName: file.name,
+            totalRows: 0,
+            validRows: 0,
+            invalidRows: 0,
+            errors: [`The "${expectedSheetName}" sheet has no data rows.`],
+            validRowNumbers: [],
+            invalidRowNumbers: [],
+            rowIssues: {},
+          });
+          return;
+        }
+
+        const fileHeaders = Object.keys(rows[0] ?? {});
+        const missingHeaders = requiredHeaders.filter((header) => !fileHeaders.includes(header));
+
+        if (missingHeaders.length > 0) {
+          resolve({
+            fileName: file.name,
+            totalRows: rows.length,
+            validRows: 0,
+            invalidRows: rows.length,
+            errors: [`Missing required columns: ${missingHeaders.join(', ')}.`],
+            validRowNumbers: [],
+            invalidRowNumbers: rows.map((_, index) => index + 2),
+            rowIssues: {},
+          });
+          return;
+        }
+
+        resolve({
+          fileName: file.name,
+          totalRows: rows.length,
+          validRows: rows.length,
+          invalidRows: 0,
+          errors: [],
+          validRowNumbers: rows.map((_, index) => index + 2),
+          invalidRowNumbers: [],
+          rowIssues: {},
+        });
+      } catch (err) {
+        resolve({
+          fileName: file.name,
+          totalRows: 0,
+          validRows: 0,
+          invalidRows: 0,
+          errors: [`Failed to parse file: ${err instanceof Error ? err.message : String(err)}`],
+          validRowNumbers: [],
+          invalidRowNumbers: [],
+          rowIssues: {},
+        });
+      }
+    };
+
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------

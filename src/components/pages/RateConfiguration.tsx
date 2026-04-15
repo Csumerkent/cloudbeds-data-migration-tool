@@ -143,6 +143,45 @@ function RateConfiguration() {
         <em>roomTypeID</em> to find the correct <em>rateID</em> for each reservation.
       </div>
 
+      <div className="config-row config-row--tight" style={{ marginTop: 8 }}>
+        <div className="config-field">
+          <label>Start Date</label>
+          <input
+            type="text"
+            value={startDate}
+            placeholder="YYYY-MM-DD"
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+        </div>
+        <div className="config-field">
+          <label>End Date</label>
+          <input
+            type="text"
+            value={endDate}
+            placeholder="YYYY-MM-DD"
+            onChange={(e) => setEndDate(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <button
+        className="btn btn-primary"
+        onClick={handleGetRates}
+        disabled={loadStatus === 'loading'}
+        style={{ marginTop: 8 }}
+      >
+        {loadStatus === 'loading' ? 'Fetching...' : 'Get Rates'}
+      </button>
+
+      {statusMessage && (
+        <div
+          className={`status-area status-area--${loadStatus === 'loading' ? 'idle' : loadStatus}`}
+          style={{ marginTop: 8 }}
+        >
+          {statusMessage}
+        </div>
+      )}
+
       <div className="config-section config-section--compact">
         <h4>Old Reservations</h4>
         <div className="config-row config-row--tight">
@@ -186,45 +225,6 @@ function RateConfiguration() {
           </div>
         </div>
       </div>
-
-      <div className="config-row config-row--tight" style={{ marginTop: 8 }}>
-        <div className="config-field">
-          <label>Start Date</label>
-          <input
-            type="text"
-            value={startDate}
-            placeholder="YYYY-MM-DD"
-            onChange={(e) => setStartDate(e.target.value)}
-          />
-        </div>
-        <div className="config-field">
-          <label>End Date</label>
-          <input
-            type="text"
-            value={endDate}
-            placeholder="YYYY-MM-DD"
-            onChange={(e) => setEndDate(e.target.value)}
-          />
-        </div>
-      </div>
-
-      <button
-        className="btn btn-primary"
-        onClick={handleGetRates}
-        disabled={loadStatus === 'loading'}
-        style={{ marginTop: 8 }}
-      >
-        {loadStatus === 'loading' ? 'Fetching...' : 'Get Rates'}
-      </button>
-
-      {statusMessage && (
-        <div
-          className={`status-area status-area--${loadStatus === 'loading' ? 'idle' : loadStatus}`}
-          style={{ marginTop: 8 }}
-        >
-          {statusMessage}
-        </div>
-      )}
 
       {rateRows.length > 0 && (
         <div className="scrollable-list" style={{ marginTop: 12 }}>

@@ -49,6 +49,10 @@ declare global {
       testOtherUrl: (params: { baseUrl: string; testPath: string; apiKey: string }) => Promise<TestOtherUrlResult>;
       apiGet: (params: { url: string; apiKey: string }) => Promise<ApiGetResult>;
       apiPost: (params: { url: string; apiKey: string; body: Record<string, string> }) => Promise<ApiPostResult>;
+      menuAction: (action: string) => Promise<{ ok: boolean }>;
+      windowAction: (action: 'minimize' | 'toggle-maximize' | 'close') => Promise<{ ok: boolean; isMaximized: boolean }>;
+      getWindowState: () => Promise<{ isMaximized: boolean }>;
+      onWindowStateChanged: (callback: (state: { isMaximized: boolean }) => void) => () => void;
     };
   }
 }

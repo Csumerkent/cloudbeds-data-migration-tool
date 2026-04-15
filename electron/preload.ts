@@ -10,4 +10,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('api-get', params),
   apiPost: (params: { url: string; apiKey: string; body: Record<string, string> }) =>
     ipcRenderer.invoke('api-post', params),
+  menuAction: (action: string) => ipcRenderer.invoke('menu-action', action),
+  windowAction: (action: 'minimize' | 'toggle-maximize' | 'close') =>
+    ipcRenderer.invoke('window-action', action),
+  getWindowState: () => ipcRenderer.invoke('window-state'),
+  onWindowStateChanged: (callback: (state: { isMaximized: boolean }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: { isMaximized: boolean }) => callback(state);
+    ipcRenderer.on('window-state-changed', listener);
+    return () => ipcRenderer.removeListener('window-state-changed', listener);
+  },
 });
