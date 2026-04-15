@@ -360,3 +360,337 @@ export function normalizeRateKey(raw: string | null | undefined): string {
     .trim()
     .replace(/[\s_\-]+/g, '');
 }
+
+// ===========================================================================
+// Dates / times
+// ===========================================================================
+//
+// All Cloudbeds API date fields are passed through here so the migration flow
+// never sends a raw Excel cell. The rules are strict: if the input can't be
+// parsed with confidence, the helper returns null and the caller is expected
+// to mark the row as a VALIDATION_ERROR. We never silently reinterpret an
+// ambiguous value as something else.
+//
+// Supported input shapes (all trimmed before matching):
+//   - ISO date:      2024-05-17
+//   - ISO datetime:  2024-05-17T14:30:00[Z|±HH:mm], 2024-05-17 14:30[:ss]
+//   - Day-first:     17/05/2024, 17-05-2024, 17.05.2024  (with optional time)
+//   - Month-first:   05/17/2024 (only when unambiguous — day > 12)
+//   - Excel serial:  a plain number or numeric string (1899 date system with
+//                    the Excel 1900-leap-year bug preserved)
+//   - JS Date fallback: anything Date(raw) can parse that still resolves to a
+//                    real calendar date
+//
+// Ambiguity policy: when both components are ≤ 12 (e.g. 03/04/2024) we treat
+// the input as day-first, matching the Turkish / European bias of this tool.
+
+const EMPTY_LIKE_DATES = new Set(['', '-', '--', 'n/a', 'na', 'none', 'null', 'undefined']);
+
+/** Clamp year to a sane window so typos don't produce year 20 or 20240. */
+function isReasonableYear(y: number): boolean {
+  return y >= 1900 && y <= 9999;
+}
+
+/** Zero-pad a number to 2 digits. */
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** Zero-pad a number to 4 digits. */
+function pad4(n: number): string {
+  return String(n).padStart(4, '0');
+}
+
+/**
+ * Build a UTC date from component parts while validating that the components
+ * actually round-trip (rejects 2024-02-30, 2024-13-01, etc.).
+ */
+function composeUtcDate(
+  y: number,
+  m: number,
+  d: number,
+  hh = 0,
+  mm = 0,
+  ss = 0,
+): Date | null {
+  if (!isReasonableYear(y)) return null;
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d, hh, mm, ss));
+  if (isNaN(dt.getTime())) return null;
+  // Reject rollover (e.g. Feb 30 → Mar 2).
+  if (
+    dt.getUTCFullYear() !== y ||
+    dt.getUTCMonth() !== m - 1 ||
+    dt.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  return dt;
+}
+
+/** Format a UTC-anchored Date as YYYY-MM-DD. */
+function formatYmd(dt: Date): string {
+  return `${pad4(dt.getUTCFullYear())}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+/** Format a UTC-anchored Date as YYYY-MM-DD HH:mm:ss (API datetime shape). */
+function formatYmdHms(dt: Date): string {
+  return `${formatYmd(dt)} ${pad2(dt.getUTCHours())}:${pad2(dt.getUTCMinutes())}:${pad2(dt.getUTCSeconds())}`;
+}
+
+/**
+ * Excel 1900 date system → JS Date.
+ *
+ * Excel's serial 1 == 1900-01-01. The 1900-02-29 leap-year bug means serials
+ * ≥ 60 are off by one; we compensate so the output matches what Excel
+ * displays.
+ *
+ * Returns null for values outside [1, 2958465] (≈ 9999-12-31).
+ */
+function excelSerialToDate(serial: number): Date | null {
+  if (!Number.isFinite(serial)) return null;
+  if (serial < 1 || serial > 2958465) return null;
+  // Days since 1899-12-30, offset by the 1900-leap-year bug for serials ≥ 60.
+  const offset = serial < 60 ? 1 : 0;
+  const ms = Math.round((serial - 25569 + offset) * 86400000);
+  const dt = new Date(ms);
+  if (isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+/**
+ * Parse optional trailing time from a token like "14:30" / "14:30:45".
+ * Returns { hh, mm, ss } or null if unparseable.
+ */
+function parseTimeTail(raw: string): { hh: number; mm: number; ss: number } | null {
+  const m = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  return {
+    hh: Number(m[1]),
+    mm: Number(m[2]),
+    ss: m[3] ? Number(m[3]) : 0,
+  };
+}
+
+/**
+ * Decide whether a prepared string is blank-like. Keep in sync with the
+ * blank-like tokens used by the email normalizer so the whole migration flow
+ * treats missing values consistently.
+ */
+function isBlankDateToken(raw: string): boolean {
+  return EMPTY_LIKE_DATES.has(raw.toLowerCase());
+}
+
+/**
+ * Core parser shared by normalizeApiDate / normalizeApiDateTime. Returns a
+ * UTC-anchored Date plus a flag indicating whether the input carried a time
+ * component.
+ *
+ * Never reinterprets an unambiguous input — e.g. "13/04/2024" is always
+ * day-first because month 13 is impossible.
+ */
+function parseAnyDate(raw: string | null | undefined): { date: Date; hasTime: boolean } | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed || isBlankDateToken(trimmed)) return null;
+
+  // --- Pure Excel serial (e.g. "45398" or "45398.5") ---
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    const serial = Number(trimmed);
+    const dt = excelSerialToDate(serial);
+    if (dt) {
+      const hasTime = serial % 1 !== 0;
+      return { date: dt, hasTime };
+    }
+    return null;
+  }
+
+  // --- ISO shapes: YYYY-MM-DD or YYYY-MM-DDTHH:mm[:ss][Z|±HH:mm] or
+  //     YYYY-MM-DD HH:mm[:ss] / YYYY/MM/DD[ HH:mm[:ss]] ---
+  {
+    const m = trimmed.match(
+      /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/,
+    );
+    if (m) {
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const d = Number(m[3]);
+      const hh = m[4] != null ? Number(m[4]) : 0;
+      const mm = m[5] != null ? Number(m[5]) : 0;
+      const ss = m[6] != null ? Number(m[6]) : 0;
+      // If a timezone suffix is present, use Date parsing so the offset is
+      // applied correctly; otherwise compose in UTC to avoid local-timezone
+      // drift altering the calendar date.
+      if (m[7]) {
+        const dt = new Date(trimmed);
+        if (!isNaN(dt.getTime())) {
+          return { date: dt, hasTime: m[4] != null };
+        }
+        return null;
+      }
+      const dt = composeUtcDate(y, mo, d, hh, mm, ss);
+      if (!dt) return null;
+      return { date: dt, hasTime: m[4] != null };
+    }
+  }
+
+  // --- Slash / dash / dot-separated with 4-digit year on either end ---
+  //     17/05/2024, 17-05-2024, 17.05.2024, 05/17/2024, optionally with time
+  {
+    const m = trimmed.match(
+      /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+    );
+    if (m) {
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      let y = Number(m[3]);
+      if (m[3].length === 2) {
+        // Two-digit year: 00-69 → 2000s, 70-99 → 1900s (common in Excel
+        // exports). Anything outside wins up as an unreasonable year and
+        // fails validation below.
+        y = y <= 69 ? 2000 + y : 1900 + y;
+      }
+      let day: number;
+      let month: number;
+      if (a > 12 && b <= 12) {
+        day = a;
+        month = b;
+      } else if (b > 12 && a <= 12) {
+        day = b;
+        month = a;
+      } else {
+        // Both ≤ 12 → treat as day-first (EU/TR convention used by this tool).
+        day = a;
+        month = b;
+      }
+      const hh = m[4] != null ? Number(m[4]) : 0;
+      const mm = m[5] != null ? Number(m[5]) : 0;
+      const ss = m[6] != null ? Number(m[6]) : 0;
+      const dt = composeUtcDate(y, month, day, hh, mm, ss);
+      if (!dt) return null;
+      return { date: dt, hasTime: m[4] != null };
+    }
+  }
+
+  // --- Last-resort JS Date fallback (covers "May 17 2024", RFC 2822, etc.).
+  //     Only accept if the resulting year is reasonable.
+  {
+    const dt = new Date(trimmed);
+    if (!isNaN(dt.getTime()) && isReasonableYear(dt.getUTCFullYear())) {
+      // If the trimmed string clearly lacks a time, flag hasTime=false so
+      // date-only callers don't emit a bogus 00:00:00 datetime.
+      const hasTime = /\d:\d/.test(trimmed);
+      return { date: dt, hasTime };
+    }
+  }
+
+  return null;
+}
+
+/** Parse `parseTimeTail` output + AM/PM token into 24-hour hh/mm. */
+function apply12HourSuffix(
+  parts: { hh: number; mm: number; ss: number },
+  suffix: string | null,
+): { hh: number; mm: number; ss: number } | null {
+  if (!suffix) return parts;
+  const upper = suffix.toUpperCase();
+  let { hh } = parts;
+  if (hh < 1 || hh > 12) return null;
+  if (upper === 'PM' && hh !== 12) hh += 12;
+  if (upper === 'AM' && hh === 12) hh = 0;
+  return { hh, mm: parts.mm, ss: parts.ss };
+}
+
+/**
+ * Normalize a raw date-only value into `YYYY-MM-DD`. Returns null when the
+ * input is blank or cannot be parsed with confidence.
+ */
+export function normalizeApiDate(raw: string | null | undefined): string | null {
+  const parsed = parseAnyDate(raw);
+  if (!parsed) return null;
+  return formatYmd(parsed.date);
+}
+
+/**
+ * Normalize a raw date or datetime value into `YYYY-MM-DD HH:mm:ss`. Date-only
+ * inputs are expanded to `00:00:00`. Returns null when the input is blank or
+ * cannot be parsed with confidence.
+ */
+export function normalizeApiDateTime(raw: string | null | undefined): string | null {
+  const parsed = parseAnyDate(raw);
+  if (!parsed) return null;
+  return formatYmdHms(parsed.date);
+}
+
+/**
+ * Normalize a raw time-of-day value into 24-hour `HH:mm`.
+ *  - "14:30" / "14:30:45"  → "14:30"
+ *  - "2:30 PM" / "2 pm"    → "14:30" / "14:00"
+ *  - "0930" / "930"        → "09:30"
+ *  - Excel fractional day  → time-of-day
+ *
+ * Returns null when the input is blank or cannot be parsed with confidence.
+ */
+export function normalizeApiTime(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed || isBlankDateToken(trimmed)) return null;
+
+  // Excel fractional day (e.g. 0.5 → 12:00).
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) return null;
+    // If it's clearly a full serial (>=1 with an integer part), take the
+    // fractional part as time-of-day.
+    const frac = n - Math.trunc(n);
+    if (n >= 1) {
+      const totalSeconds = Math.round(frac * 86400);
+      const hh = Math.floor(totalSeconds / 3600) % 24;
+      const mm = Math.floor((totalSeconds % 3600) / 60);
+      return `${pad2(hh)}:${pad2(mm)}`;
+    }
+    if (n >= 0 && n < 1) {
+      const totalSeconds = Math.round(n * 86400);
+      const hh = Math.floor(totalSeconds / 3600) % 24;
+      const mm = Math.floor((totalSeconds % 3600) / 60);
+      return `${pad2(hh)}:${pad2(mm)}`;
+    }
+    // Otherwise: treat bare integers as HHmm / HMM.
+    if (n >= 0 && n < 2400) {
+      const hh = Math.floor(n / 100);
+      const mm = n % 100;
+      if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) return `${pad2(hh)}:${pad2(mm)}`;
+    }
+    return null;
+  }
+
+  // 12-hour form with AM/PM suffix.
+  const ampm = trimmed.match(/^(\d{1,2})(?::(\d{2})(?::(\d{2}))?)?\s*([AaPp][Mm])$/);
+  if (ampm) {
+    const parts = { hh: Number(ampm[1]), mm: ampm[2] ? Number(ampm[2]) : 0, ss: ampm[3] ? Number(ampm[3]) : 0 };
+    const final = apply12HourSuffix(parts, ampm[4]);
+    if (!final) return null;
+    if (final.mm < 0 || final.mm > 59) return null;
+    return `${pad2(final.hh)}:${pad2(final.mm)}`;
+  }
+
+  // 24-hour HH:mm[:ss]
+  const colon = parseTimeTail(trimmed);
+  if (colon) {
+    if (colon.hh > 23 || colon.mm > 59 || colon.ss > 59) return null;
+    return `${pad2(colon.hh)}:${pad2(colon.mm)}`;
+  }
+
+  // Compact numeric HHmm / HMM ("0930" / "930").
+  const compact = trimmed.match(/^(\d{3,4})$/);
+  if (compact) {
+    const raw4 = compact[1].padStart(4, '0');
+    const hh = Number(raw4.slice(0, 2));
+    const mm = Number(raw4.slice(2));
+    if (hh > 23 || mm > 59) return null;
+    return `${pad2(hh)}:${pad2(mm)}`;
+  }
+
+  return null;
+}

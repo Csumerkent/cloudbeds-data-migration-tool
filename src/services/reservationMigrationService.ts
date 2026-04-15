@@ -17,7 +17,7 @@ import {
   CloudbedsRateEntry,
   RateDefaults,
 } from './rateConfigurationService';
-import { normalizeGender, normalizeCountry, normalizeEmail, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
+import { normalizeGender, normalizeCountry, normalizeEmail, normalizePayment, normalizeSourceKey, normalizeRateKey, normalizeApiDate, normalizeApiDateTime, normalizeApiTime } from './normalizationHelpers';
 import { getCurrentAppDateTime } from './appDateTimeService';
 import { info, debug, warn, error as logError } from './debugLogger';
 
@@ -90,7 +90,7 @@ const BATCH_CONCURRENCY = 10;
 // large imports.
 const VERBOSE_ROW_LIMIT = 1000;
 
-interface BuildPayloadResult {
+export interface BuildPayloadResult {
   payload: Record<string, string> | null;
   error: string | null;
   errorCategory?: MigrationErrorCategory;
@@ -98,7 +98,7 @@ interface BuildPayloadResult {
   finalEmail: string;
 }
 
-interface ParsedApiError {
+export interface ParsedApiError {
   category: MigrationErrorCategory;
   reason: string;
   details: string[];
@@ -211,7 +211,7 @@ function summarizeResponse(data: unknown, rawText?: string): string {
   return 'No response body returned';
 }
 
-function parseApiFailure(status: number, data: unknown, transportError?: string, rawText?: string): ParsedApiError {
+export function parseApiFailure(status: number, data: unknown, transportError?: string, rawText?: string): ParsedApiError {
   const messages = collectApiMessages(data);
   const hasStructuredValidation =
     !!data &&
@@ -266,7 +266,7 @@ export function parseReservationFile(file: File): Promise<Record<string, string>
 // Build a postReservation payload from one Excel row
 // ---------------------------------------------------------------------------
 
-function buildPayload(
+export function buildPayload(
   row: Record<string, string>,
   rowIndex: number,
   propertyId: string,
@@ -286,8 +286,8 @@ function buildPayload(
     : (_m: string, _s: string, _msg: string, _p?: unknown) => {};
 
   // Required fields
-  const arrival = get('Arrival *');
-  const departure = get('Departure *');
+  const rawArrival = get('Arrival *');
+  const rawDeparture = get('Departure *');
   const firstName = get('First Name *');
   const lastName = get('Last Name *');
   const roomTypeCode = get('Room Type *');
@@ -296,9 +296,9 @@ function buildPayload(
   const normalizedEmail = normalizeEmail(rawEmail);
   const finalEmail = normalizedEmail || `migration+${rowIndex}@example.com`;
 
-  if (!arrival || !departure || !firstName || !lastName || !roomTypeCode || !country) {
+  if (!rawArrival || !rawDeparture || !firstName || !lastName || !roomTypeCode || !country) {
     rowDebug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
-      arrival: arrival || '(empty)', departure: departure || '(empty)',
+      arrival: rawArrival || '(empty)', departure: rawDeparture || '(empty)',
       firstName: firstName || '(empty)', lastName: lastName || '(empty)',
       roomTypeCode: roomTypeCode || '(empty)', country: country || '(empty)',
     });
@@ -310,6 +310,47 @@ function buildPayload(
       finalEmail,
     };
   }
+
+  // Normalize required dates — a row without parseable arrival/departure is a
+  // validation failure; we never send a raw Excel date string to the API.
+  const arrival = normalizeApiDate(rawArrival);
+  const departure = normalizeApiDate(rawDeparture);
+
+  if (!arrival) {
+    rowDebug('Migration', 'payload', `Row ${rowIndex}: unparseable arrival date "${rawArrival}"`, { raw: rawArrival });
+    return {
+      payload: null,
+      error: `Arrival date "${rawArrival}" could not be parsed — expected YYYY-MM-DD, DD/MM/YYYY, or similar`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
+  }
+  if (!departure) {
+    rowDebug('Migration', 'payload', `Row ${rowIndex}: unparseable departure date "${rawDeparture}"`, { raw: rawDeparture });
+    return {
+      payload: null,
+      error: `Departure date "${rawDeparture}" could not be parsed — expected YYYY-MM-DD, DD/MM/YYYY, or similar`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
+  }
+  if (departure <= arrival) {
+    rowDebug('Migration', 'payload', `Row ${rowIndex}: departure not after arrival (arrival=${arrival}, departure=${departure})`, {
+      rawArrival, rawDeparture, arrival, departure,
+    });
+    return {
+      payload: null,
+      error: `Departure date (${departure}) must be after arrival date (${arrival})`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
+  }
+  rowDebug('Migration', 'normalize', `Row ${rowIndex}: dates arrival "${rawArrival}" → "${arrival}", departure "${rawDeparture}" → "${departure}"`, {
+    rawArrival, arrival, rawDeparture, departure,
+  });
 
   // Resolve room type
   const roomTypeID = resolveRoomTypeId(roomTypes, roomTypeCode);
@@ -363,9 +404,11 @@ function buildPayload(
 
   // Determine past vs future reservation once (used by both source and rate
   // default selection). Reservations with arrival < today are considered past.
+  // `arrival` is already a normalized "YYYY-MM-DD" string so Date.UTC parsing
+  // is unambiguous — no local-timezone drift.
   const today = getCurrentAppDateTime();
   today.setHours(0, 0, 0, 0);
-  const arrivalDate = new Date(arrival);
+  const arrivalDate = new Date(arrival + 'T00:00:00Z');
   const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
   const bucket = isPastReservation ? 'past' : 'future';
 
@@ -593,9 +636,25 @@ function buildPayload(
     });
   }
 
-  // Optional: ETA
-  const eta = get('ETA');
-  if (eta) payload.estimatedArrivalTime = eta;
+  // Optional: ETA — normalize to HH:mm; skip silently if blank, fail if
+  // a value is present but unrecognizable.
+  const rawEta = get('ETA');
+  if (rawEta) {
+    const eta = normalizeApiTime(rawEta);
+    rowDebug('Migration', 'normalize', `Row ${rowIndex}: ETA "${rawEta}" → "${eta ?? '(invalid)'}"`, {
+      raw: rawEta, normalized: eta,
+    });
+    if (!eta) {
+      return {
+        payload: null,
+        error: `ETA "${rawEta}" could not be parsed — expected HH:mm or similar`,
+        errorCategory: 'VALIDATION_ERROR',
+        normalizedEmail,
+        finalEmail,
+      };
+    }
+    payload.estimatedArrivalTime = eta;
+  }
 
   // Rate was resolved earlier (roomRateID is embedded inside the rooms array).
 
@@ -615,9 +674,25 @@ function buildPayload(
   const groupCode = get('Group Code');
   if (groupCode) payload.groupCode = groupCode;
 
-  // Optional: creation date
-  const creationDate = get('Creation Date');
-  if (creationDate) payload.dateCreated = creationDate;
+  // Optional: creation date — normalize to YYYY-MM-DD HH:mm:ss; skip
+  // silently if blank, fail if a value is present but unrecognizable.
+  const rawCreationDate = get('Creation Date');
+  if (rawCreationDate) {
+    const creationDate = normalizeApiDateTime(rawCreationDate);
+    rowDebug('Migration', 'normalize', `Row ${rowIndex}: Creation Date "${rawCreationDate}" → "${creationDate ?? '(invalid)'}"`, {
+      raw: rawCreationDate, normalized: creationDate,
+    });
+    if (!creationDate) {
+      return {
+        payload: null,
+        error: `Creation Date "${rawCreationDate}" could not be parsed — expected YYYY-MM-DD or similar`,
+        errorCategory: 'VALIDATION_ERROR',
+        normalizedEmail,
+        finalEmail,
+      };
+    }
+    payload.dateCreated = creationDate;
+  }
 
   rowDebug('Migration', 'payload', `Row ${rowIndex}: payload built`, {
     rowIndex,
@@ -1096,4 +1171,117 @@ export async function migrateReservations(
   info('Migration', 'complete', summaryHeadline);
   emitProgress();
   return progress;
+}
+
+// ---------------------------------------------------------------------------
+// Shared row-execution primitive (used by both migrateReservations and
+// chunkExecutor so the two paths stay in sync).
+// ---------------------------------------------------------------------------
+
+export interface RowExecutionResult {
+  mRow: MigrationRow;
+}
+
+/**
+ * Send one pre-built payload to the Cloudbeds postReservation endpoint and
+ * return the populated MigrationRow. This function never throws — all errors
+ * are captured into the returned mRow.
+ */
+export async function sendReservationPayload(
+  postUrl: string,
+  apiKey: string,
+  payload: Record<string, string>,
+  rowNumber: number,
+  verbose = false,
+): Promise<MigrationRow> {
+  const rowDebug = verbose
+    ? debug
+    : (_m: string, _s: string, _msg: string, _p?: unknown) => {};
+
+  const mRow: MigrationRow = {
+    rowNumber,
+    status: 'sending',
+    message: '',
+    payload,
+  };
+
+  try {
+    rowDebug('Migration', 'send', `Sending row ${rowNumber}`, {
+      url: postUrl,
+      payload: { ...payload, propertyID: '***' },
+    });
+
+    const result = await window.electronAPI.apiPost({ url: postUrl, apiKey, body: payload });
+
+    rowDebug('Migration', 'response', `Row ${rowNumber}: HTTP ${result.status}`, {
+      ok: result.ok, status: result.status, data: result.data,
+    });
+
+    if (result.ok) {
+      const respData = result.data as {
+        success?: boolean;
+        message?: string;
+        data?: {
+          reservationID?: string | number;
+          guestID?: string | number;
+          guestEmail?: string;
+          guestFirstName?: string;
+          guestLastName?: string;
+          status?: string;
+          startDate?: string;
+          endDate?: string;
+          dateCreated?: string;
+        };
+      } | null;
+      mRow.apiResponse = result.data;
+      mRow.apiHttpStatus = result.status;
+      if (respData?.success) {
+        mRow.status = 'success';
+        const d = respData.data ?? {};
+        const toStr = (v: unknown): string | undefined =>
+          v == null || v === '' ? undefined : String(v);
+        mRow.reservationId = toStr(d.reservationID);
+        mRow.guestId = toStr(d.guestID);
+        mRow.guestEmail = toStr(d.guestEmail);
+        mRow.guestFirstName = toStr(d.guestFirstName);
+        mRow.guestLastName = toStr(d.guestLastName);
+        mRow.responseStatus = toStr(d.status);
+        mRow.responseStartDate = toStr(d.startDate);
+        mRow.responseEndDate = toStr(d.endDate);
+        mRow.dateCreated = toStr(d.dateCreated);
+        mRow.message = mRow.reservationId
+          ? `Created reservation ${mRow.reservationId}`
+          : 'Reservation created';
+        info('Migration', 'success', `Row ${rowNumber}: ${mRow.message}`);
+      } else {
+        const parsedError = parseApiFailure(result.status, result.data, result.error, result.rawText);
+        mRow.status = 'failed';
+        mRow.message = parsedError.reason;
+        mRow.errorCategory = parsedError.category;
+        mRow.failureStage = 'post_api';
+        mRow.failureDetails = [parsedError.responseSummary, ...parsedError.details];
+        warn('Migration', 'api-error', `Row ${rowNumber}: ${mRow.message}`);
+      }
+    } else {
+      const parsedError = parseApiFailure(result.status, result.data, result.error, result.rawText);
+      mRow.status = 'failed';
+      mRow.message = parsedError.reason;
+      mRow.errorCategory = parsedError.category;
+      mRow.failureStage = 'post_api';
+      mRow.failureDetails = [parsedError.responseSummary, ...parsedError.details];
+      mRow.apiResponse = result.data ?? result.rawText ?? result.error;
+      mRow.apiHttpStatus = result.status;
+      warn('Migration', 'http-error', `Row ${rowNumber}: ${mRow.message}`, { status: result.status });
+    }
+  } catch (err) {
+    mRow.status = 'failed';
+    mRow.message = err instanceof Error ? err.message : String(err);
+    mRow.errorCategory = 'UNKNOWN_ERROR';
+    mRow.failureStage = 'post_api';
+    mRow.failureDetails = [mRow.message];
+    mRow.apiResponse = err instanceof Error ? { name: err.name, message: err.message } : String(err);
+    logError('Migration', 'exception', `Row ${rowNumber}: ${mRow.message}`);
+  }
+
+  return mRow;
 }
