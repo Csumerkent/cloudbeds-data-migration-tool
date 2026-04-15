@@ -13,6 +13,21 @@ const ALL_LEVELS: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
 
 type DebugTab = 'all' | 'migration';
 
+// Steps that are useful for deep debugging but add noise to the operator's
+// Migration view. Suppressed from the Migration tab only — All Logs is
+// unaffected so these entries are still reachable when needed.
+const MIGRATION_TAB_NOISY_STEPS = new Set<string>([
+  'normalize',
+  'resolve',
+  'payload',
+  'row-summary',
+  'send',
+  'response',
+  'api-error-raw',
+  'success',
+  'skip',
+]);
+
 function DebugTool() {
   const [logs, setLogs] = useState<LogEntry[]>(() => [...getLogs()]);
   const [activeTab, setActiveTab] = useState<DebugTab>('all');
@@ -26,7 +41,14 @@ function DebugTool() {
   // (including the final summary) is always visible at the top without
   // scrolling.
   const migrationLogs = useMemo(() => {
-    return [...logs].filter((l) => l.module === 'Migration').reverse();
+    return [...logs]
+      .filter((l) => l.module === 'Migration')
+      .filter((l) => {
+        // Keep all warnings / errors; drop noisy per-row debug steps.
+        if (l.level === 'WARN' || l.level === 'ERROR') return true;
+        return !MIGRATION_TAB_NOISY_STEPS.has(l.step);
+      })
+      .reverse();
   }, [logs]);
 
   // Base set for current tab
@@ -143,7 +165,7 @@ function DebugTool() {
 
       {activeTab === 'migration' && (
         <div className="config-note config-note--compact">
-          Migration logs: upload, validation, parsing, payload build, resolve, API request/response, row results.
+          Migration logs: start, validation, batches, cancellation, HTTP / API errors, and final summaries. Per-row payload, normalization, and success entries remain available in All Logs.
         </div>
       )}
 

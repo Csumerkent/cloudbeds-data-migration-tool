@@ -1,151 +1,111 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import PageShell from './PageShell';
 import ReportingRecordsTable, { type ReportingRecord } from './ReportingRecordsTable';
+import {
+  getCurrentSession,
+  subscribe,
+  type MigrationSessionRecord,
+} from '../services/migrationSessionStore';
 
-interface SessionData {
-  id: string;
-  label: string;
-  runDate: string;
-  operator: string;
-  successRate: string;
-  successfulRecords: ReportingRecord[];
-  failedRecords: ReportingRecord[];
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
-const SESSIONS: SessionData[] = [
-  {
-    id: 'session-1',
-    label: 'Session 1',
-    runDate: '15 Apr 2026, 09:40',
-    operator: 'Onboarding Team A',
-    successRate: '91%',
-    successfulRecords: [
-      { reservationNumber: 'CBR-10421', profileNumber: 'PF-20031', email: 'ayse.demir@example.com' },
-      { reservationNumber: 'CBR-10422', profileNumber: 'PF-20032', email: 'murat.kaya@example.com' },
-      { reservationNumber: 'CBR-10427', profileNumber: 'PF-20039', email: 'elif.sahin@example.com' },
-    ],
-    failedRecords: [
-      {
-        reservationNumber: 'CBR-10425',
-        profileNumber: 'PF-20035',
-        email: 'ops+missing-rate@example.com',
-        failureReason: 'Rate plan could not be resolved for room type DLX-SEA.',
-      },
-      {
-        reservationNumber: 'CBR-10429',
-        profileNumber: 'PF-20041',
-        email: 'ops+source-mismatch@example.com',
-        failureReason: 'Source ID missing for former PMS source configuration.',
-      },
-    ],
-  },
-  {
-    id: 'session-2',
-    label: 'Session 2',
-    runDate: '15 Apr 2026, 13:10',
-    operator: 'Onboarding Team B',
-    successRate: '96%',
-    successfulRecords: [
-      { reservationNumber: 'CBR-10501', profileNumber: 'PF-20110', email: 'fatma.arslan@example.com' },
-      { reservationNumber: 'CBR-10503', profileNumber: 'PF-20112', email: 'baris.yilmaz@example.com' },
-      { reservationNumber: 'CBR-10508', profileNumber: 'PF-20117', email: 'melis.turan@example.com' },
-      { reservationNumber: 'CBR-10511', profileNumber: 'PF-20120', email: 'okan.cetin@example.com' },
-    ],
-    failedRecords: [
-      {
-        reservationNumber: 'CBR-10506',
-        profileNumber: 'PF-20115',
-        email: 'ops+duplicate@example.com',
-        failureReason: 'Duplicate guest profile detected during migration validation.',
-      },
-    ],
-  },
-  {
-    id: 'session-3',
-    label: 'Session 3',
-    runDate: '15 Apr 2026, 17:25',
-    operator: 'Evening Support',
-    successRate: '88%',
-    successfulRecords: [
-      { reservationNumber: 'CBR-10600', profileNumber: 'PF-20204', email: 'selin.ozkan@example.com' },
-      { reservationNumber: 'CBR-10601', profileNumber: 'PF-20205', email: 'can.akar@example.com' },
-    ],
-    failedRecords: [
-      {
-        reservationNumber: 'CBR-10603',
-        profileNumber: 'PF-20207',
-        email: 'ops+missing-room@example.com',
-        failureReason: 'Mapped room number was not found in Cloudbeds room inventory.',
-      },
-      {
-        reservationNumber: 'CBR-10604',
-        profileNumber: 'PF-20208',
-        email: 'ops+invalid-email@example.com',
-        failureReason: 'Profile email failed normalization and API payload validation.',
-      },
-      {
-        reservationNumber: 'CBR-10607',
-        profileNumber: 'PF-20211',
-        email: 'ops+cutoff@example.com',
-        failureReason: 'Session stopped before accounting follow-up rows were processed.',
-      },
-    ],
-  },
-];
+function toRecords(session: MigrationSessionRecord): {
+  successful: ReportingRecord[];
+  failed: ReportingRecord[];
+} {
+  const successful: ReportingRecord[] = [];
+  const failed: ReportingRecord[] = [];
+  for (const row of session.rows) {
+    const email = row.guestEmail || row.finalEmail || row.normalizedEmail || '—';
+    if (row.status === 'success') {
+      successful.push({
+        rowNumber: row.rowNumber,
+        reservationId: row.reservationId,
+        guestId: row.guestId,
+        email,
+      });
+    } else if (row.status === 'failed' || row.status === 'skipped') {
+      failed.push({
+        rowNumber: row.rowNumber,
+        email,
+        failureReason: row.message,
+        payload: row.payload,
+        apiResponse: row.apiResponse,
+        apiHttpStatus: row.apiHttpStatus,
+      });
+    }
+  }
+  return { successful, failed };
+}
 
 function ReportingSession() {
-  const [activeSessionId, setActiveSessionId] = useState(SESSIONS[0].id);
-  const activeSession = SESSIONS.find((session) => session.id === activeSessionId) ?? SESSIONS[0];
+  const [session, setSession] = useState<MigrationSessionRecord | null>(() => getCurrentSession());
+
+  useEffect(() => {
+    const unsubscribe = subscribe(() => {
+      setSession(getCurrentSession());
+    });
+    return unsubscribe;
+  }, []);
+
+  if (!session) {
+    return (
+      <PageShell
+        eyebrow="Reporting"
+        title="Migration Session Reporting"
+        description="Review successful and failed migrated records by session so post-migration follow-up stays structured, auditable, and easy to scan."
+        badge="Post-Migration Results"
+        meta={[{ label: 'Current session', value: 'No run yet' }]}
+      >
+        <div className="status-area status-area--idle">
+          No migration has been executed yet. Start a reservation migration to populate this session.
+        </div>
+      </PageShell>
+    );
+  }
+
+  const { successful, failed } = toRecords(session);
+  const runLabel = session.stopped ? 'Stopped' : 'Completed';
 
   return (
     <PageShell
       eyebrow="Reporting"
       title="Migration Session Reporting"
-      description="Review successful and failed migrated records by session so post-migration follow-up stays structured, auditable, and easy to scan."
+      description="Review successful and failed migrated records from the most recent migration run."
       badge="Post-Migration Results"
       meta={[
-        { label: 'Selected session', value: activeSession.label },
-        { label: 'Run date', value: activeSession.runDate },
-        { label: 'Operator', value: activeSession.operator },
-        { label: 'Success rate', value: activeSession.successRate },
+        { label: 'Module', value: session.moduleName },
+        { label: 'File', value: session.fileName },
+        { label: 'Run started', value: formatTimestamp(session.startedAt) },
+        { label: 'Run finished', value: `${formatTimestamp(session.finishedAt)} (${runLabel})` },
+        { label: 'Success rate', value: `${session.successRate} (${session.succeeded}/${session.total})` },
       ]}
-      actions={
-        <div className="session-switcher">
-          {SESSIONS.map((session) => (
-            <button
-              key={session.id}
-              type="button"
-              className={`session-switcher__button${session.id === activeSessionId ? ' session-switcher__button--active' : ''}`}
-              onClick={() => setActiveSessionId(session.id)}
-            >
-              {session.label}
-            </button>
-          ))}
-        </div>
-      }
     >
       <div className="report-summary">
         <div className="report-summary__card">
           <span>Successful records</span>
-          <strong>{activeSession.successfulRecords.length}</strong>
+          <strong>{successful.length}</strong>
         </div>
         <div className="report-summary__card report-summary__card--warning">
           <span>Failed records</span>
-          <strong>{activeSession.failedRecords.length}</strong>
+          <strong>{failed.length}</strong>
         </div>
       </div>
 
       <div className="report-stack">
-        <ReportingRecordsTable
-          title="Successful Records"
-          tone="success"
-          records={activeSession.successfulRecords}
-        />
-        <ReportingRecordsTable
-          title="Failed Records"
-          tone="failure"
-          records={activeSession.failedRecords}
-        />
+        <ReportingRecordsTable title="Successful Records" tone="success" records={successful} />
+        <ReportingRecordsTable title="Failed Records" tone="failure" records={failed} />
       </div>
     </PageShell>
   );

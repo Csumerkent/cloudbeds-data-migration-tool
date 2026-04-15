@@ -17,6 +17,7 @@ import {
   type MigrationProgress,
 } from '../services/reservationMigrationService';
 import { info } from '../services/debugLogger';
+import { recordMigrationSession } from '../services/migrationSessionStore';
 import './pages/pages.css';
 
 type MigrationVariant = 'reservation' | 'reservation-detail' | 'profiles' | 'finance';
@@ -220,9 +221,11 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
 
     if (content.executeAction) {
       cancellationRef.current = { cancelled: false };
+      const startedAt = new Date();
       const progress = await content.executeAction(selectedFile, validationResult, (nextProgress) => {
         setMigrationProgress({ ...nextProgress });
       });
+      const finishedAt = new Date();
       setMigrationProgress(progress);
       setReadinessState('executed');
       setExecutionMessage(
@@ -230,6 +233,17 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
           ? `${progress.succeeded} rows executed successfully, ${progress.failed} failed.`
           : `Execution completed successfully for ${progress.succeeded} row(s).`,
       );
+      // Publish this run to the reporting session store so the Reports page
+      // can surface real guest / reservation data for post-run follow-up.
+      if (variant === 'reservation') {
+        recordMigrationSession({
+          moduleName: content.moduleName,
+          fileName: selectedFile.name,
+          startedAt,
+          finishedAt,
+          progress,
+        });
+      }
       return;
     }
 
@@ -389,28 +403,38 @@ function MigrationPage({ variant, onNavigate }: MigrationPageProps) {
               }}
             />
           </div>
-          <div className="migration-progress-text">
-            {migrationProgress.completed} / {migrationProgress.total} row(s) processed
-          </div>
-          <div className="scrollable-list" style={{ maxHeight: 320 }}>
-            <table className="compact-table">
-              <thead>
-                <tr>
-                  <th>Row</th>
-                  <th>Status</th>
-                  <th>Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {migrationProgress.rows.map((row) => (
-                  <tr key={row.rowNumber}>
-                    <td>{row.rowNumber}</td>
-                    <td>{row.status}</td>
-                    <td>{row.message}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div
+            className="migration-progress-summary"
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '1rem',
+              marginTop: '0.75rem',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div
+              className="migration-progress-stats"
+              style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', fontSize: '0.85rem' }}
+            >
+              <span>
+                <strong>Processed:</strong> {migrationProgress.completed} / {migrationProgress.total}
+              </span>
+              <span style={{ color: '#2e7d32' }}>
+                <strong>Succeeded:</strong> {migrationProgress.succeeded}
+              </span>
+              <span style={{ color: '#c62828' }}>
+                <strong>Failed:</strong> {migrationProgress.failed}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => onNavigate('logs')}
+            >
+              View Migration Logs
+            </button>
           </div>
         </section>
       ) : null}

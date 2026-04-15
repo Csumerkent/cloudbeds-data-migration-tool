@@ -17,7 +17,17 @@ import {
   CloudbedsRateEntry,
   RateDefaults,
 } from './rateConfigurationService';
-import { normalizeGender, normalizeCountry, normalizeEmail, normalizePayment, normalizeSourceKey, normalizeRateKey } from './normalizationHelpers';
+import {
+  normalizeGender,
+  normalizeCountry,
+  normalizeEmail,
+  normalizePayment,
+  normalizeSourceKey,
+  normalizeRateKey,
+  normalizeApiDate,
+  normalizeApiDateTime,
+  normalizeApiTime,
+} from './normalizationHelpers';
 import { getCurrentAppDateTime } from './appDateTimeService';
 import { info, debug, warn, error as logError } from './debugLogger';
 
@@ -39,6 +49,16 @@ export interface MigrationRow {
   normalizedEmail?: string;
   finalEmail?: string;
   reservationId?: string;      // Returned by Cloudbeds on success
+  guestId?: string;            // Cloudbeds guest ID on success
+  guestEmail?: string;         // Cloudbeds-stored guest email on success
+  guestFirstName?: string;
+  guestLastName?: string;
+  responseStatus?: string;     // Cloudbeds reservation status
+  responseStartDate?: string;  // Cloudbeds-echoed arrival
+  responseEndDate?: string;    // Cloudbeds-echoed departure
+  dateCreated?: string;        // Cloudbeds reservation creation timestamp
+  apiHttpStatus?: number;      // HTTP status of the API call (success + failure)
+  apiResponse?: unknown;       // Parsed response body for drill-down
   payload?: Record<string, string>; // The API payload sent
 }
 
@@ -66,6 +86,12 @@ export interface MigrationCancellation {
 // batches without overwhelming the API.
 const BATCH_SIZE = 50;
 const BATCH_CONCURRENCY = 10;
+
+// File-size-based log verbosity threshold. Runs with more rows than this
+// suppress per-row DEBUG spam (normalization / resolve / payload / send /
+// response) so the log tail stays readable. ERROR + INFO + batch logs
+// still come through.
+const VERBOSE_ROW_LIMIT = 1000;
 
 interface BuildPayloadResult {
   payload: Record<string, string> | null;
@@ -252,7 +278,12 @@ function buildPayload(
   sourceDefaults: SourceDefaults,
   rates: CloudbedsRateEntry[],
   rateDefaults: RateDefaults,
+  verbose: boolean = true,
 ): BuildPayloadResult {
+  // No-op wrappers used for per-row DEBUG / INFO spam. When `verbose` is
+  // false (large files), these become silent so the log tail stays useful.
+  const vDebug: typeof debug = verbose ? debug : () => {};
+  const vInfo: typeof info = verbose ? info : () => {};
   const get = (header: string): string => (row[header] ?? '').trim();
 
   // Required fields
@@ -267,7 +298,7 @@ function buildPayload(
   const finalEmail = normalizedEmail || `migration+${rowIndex}@example.com`;
 
   if (!arrival || !departure || !firstName || !lastName || !roomTypeCode || !country) {
-    debug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
+    vDebug('Migration', 'payload', `Row ${rowIndex}: missing required fields`, {
       arrival: arrival || '(empty)', departure: departure || '(empty)',
       firstName: firstName || '(empty)', lastName: lastName || '(empty)',
       roomTypeCode: roomTypeCode || '(empty)', country: country || '(empty)',
@@ -281,9 +312,48 @@ function buildPayload(
     };
   }
 
+  // Required: arrival / departure — normalize before any downstream use.
+  const normalizedArrival = normalizeApiDate(arrival);
+  if (!normalizedArrival) {
+    return {
+      payload: null,
+      error: `Invalid arrival date "${arrival}"`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
+  }
+  const normalizedDeparture = normalizeApiDate(departure);
+  if (!normalizedDeparture) {
+    return {
+      payload: null,
+      error: `Invalid departure date "${departure}"`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
+  }
+  if (normalizedDeparture <= normalizedArrival) {
+    return {
+      payload: null,
+      error: `Departure (${normalizedDeparture}) must be after arrival (${normalizedArrival})`,
+      errorCategory: 'VALIDATION_ERROR',
+      normalizedEmail,
+      finalEmail,
+    };
+  }
+  if (normalizedArrival !== arrival || normalizedDeparture !== departure) {
+    vDebug('Migration', 'normalize', `Row ${rowIndex}: dates "${arrival}" → "${normalizedArrival}", "${departure}" → "${normalizedDeparture}"`, {
+      rawArrival: arrival,
+      rawDeparture: departure,
+      normalizedArrival,
+      normalizedDeparture,
+    });
+  }
+
   // Resolve room type
   const roomTypeID = resolveRoomTypeId(roomTypes, roomTypeCode);
-  debug('Migration', 'resolve', `Row ${rowIndex}: room type "${roomTypeCode}" → ${roomTypeID || '(not found)'}`, {
+  vDebug('Migration', 'resolve', `Row ${rowIndex}: room type "${roomTypeCode}" → ${roomTypeID || '(not found)'}`, {
     roomTypeCode, roomTypeID, availableTypes: roomTypes.map((r) => r.roomTypeNameShort).slice(0, 10),
   });
   if (!roomTypeID) {
@@ -306,7 +376,7 @@ function buildPayload(
   const emailChanged = trimmedEmail !== finalEmail;
   const emailContainsNonAscii = /[^\x00-\x7F]/.test(trimmedEmail);
   if (emailChanged || emailContainsNonAscii || normalizedEmail === '') {
-    debug('Migration', 'normalize', `Row ${rowIndex}: email "${rawEmail}" → "${normalizedEmail || '(blank)'}"`, {
+    vDebug('Migration', 'normalize', `Row ${rowIndex}: email "${rawEmail}" → "${normalizedEmail || '(blank)'}"`, {
       raw: rawEmail,
       normalized: normalizedEmail || '(blank)',
       final: finalEmail,
@@ -318,13 +388,13 @@ function buildPayload(
   // Normalize payment method (credit / ebanking / cash)
   const rawPaymentMethod = get('Payment Method *');
   const paymentMethod = normalizePayment(rawPaymentMethod);
-  debug('Migration', 'normalize', `Row ${rowIndex}: payment "${rawPaymentMethod}" → "${paymentMethod}"`, {
+  vDebug('Migration', 'normalize', `Row ${rowIndex}: payment "${rawPaymentMethod}" → "${paymentMethod}"`, {
     raw: rawPaymentMethod, normalized: paymentMethod,
   });
 
   // Normalize country to ISO2 (always populated; falls back to TR)
   const countryResult = normalizeCountry(country);
-  debug('Migration', 'normalize', `Row ${rowIndex}: country "${country}" → "${countryResult.iso2}"${countryResult.resolved ? '' : ' (fallback)'}`, {
+  vDebug('Migration', 'normalize', `Row ${rowIndex}: country "${country}" → "${countryResult.iso2}"${countryResult.resolved ? '' : ' (fallback)'}`, {
     raw: country, normalized: countryResult.iso2, resolved: countryResult.resolved,
   });
   if (!countryResult.resolved) {
@@ -335,7 +405,10 @@ function buildPayload(
   // default selection). Reservations with arrival < today are considered past.
   const today = getCurrentAppDateTime();
   today.setHours(0, 0, 0, 0);
-  const arrivalDate = new Date(arrival);
+  // Parse normalized arrival as a UTC-midnight date so we avoid local-TZ
+  // drift when comparing against today's local midnight.
+  const [ay, am, ad] = normalizedArrival.split('-').map(Number);
+  const arrivalDate = new Date(ay, (am ?? 1) - 1, ad ?? 1);
   const isPastReservation = !isNaN(arrivalDate.getTime()) && arrivalDate < today;
   const bucket = isPastReservation ? 'past' : 'future';
 
@@ -358,7 +431,7 @@ function buildPayload(
   let usedDefaultRate = false;
 
   if (rawRateCode) {
-    debug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
+    vDebug('Migration', 'normalize', `Row ${rowIndex}: rate "${rawRateCode}" → key "${normalizedRateKey}"`, {
       raw: rawRateCode, key: normalizedRateKey,
     });
     const match = findRateMatch(rates, roomTypeID, rawRateCode);
@@ -379,7 +452,7 @@ function buildPayload(
     }
   }
 
-  debug('Migration', 'resolve', `Row ${rowIndex}: rate resolution → strategy=${rateStrategy}, name="${chosenRateName ?? '(none)'}", roomRateID=${chosenRoomRateID ?? '(none)'}`, {
+  vDebug('Migration', 'resolve', `Row ${rowIndex}: rate resolution → strategy=${rateStrategy}, name="${chosenRateName ?? '(none)'}", roomRateID=${chosenRoomRateID ?? '(none)'}`, {
     rawRate: rawRateCode || '(blank)',
     normalizedRate: normalizedRateKey,
     roomTypeID,
@@ -428,8 +501,8 @@ function buildPayload(
   // Build base payload
   const payload: Record<string, string> = {
     propertyID: propertyId,
-    startDate: arrival,
-    endDate: departure,
+    startDate: normalizedArrival,
+    endDate: normalizedDeparture,
     guestFirstName: firstName,
     guestLastName: lastName,
     guestEmail: email,
@@ -473,7 +546,7 @@ function buildPayload(
     sourceDecisionReason = 'PAST_CONFIGURED_OLD_SOURCE_APPLIED';
   } else {
     if (rawSourceCode) {
-      debug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
+      vDebug('Migration', 'normalize', `Row ${rowIndex}: source "${rawSourceCode}" → key "${normalizedSourceKey}"`, {
         raw: rawSourceCode, key: normalizedSourceKey,
       });
       const match = findSourceMatch(sources, rawSourceCode);
@@ -492,7 +565,7 @@ function buildPayload(
     }
   }
 
-  debug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${strategyUsed}, name="${chosenSourceName ?? '(none)'}", id=${chosenSourceID ?? '(none)'}`, {
+  vDebug('Migration', 'resolve', `Row ${rowIndex}: source resolution → strategy=${strategyUsed}, name="${chosenSourceName ?? '(none)'}", id=${chosenSourceID ?? '(none)'}`, {
     rawSource: rawSourceCode || '(blank)',
     normalizedSource: normalizedSourceKey,
     arrival,
@@ -542,7 +615,7 @@ function buildPayload(
   // Gender — always normalized to M / F / N/A; never raw Excel text
   const rawGender = get('Gender');
   const normalizedGender = normalizeGender(rawGender);
-  debug('Migration', 'normalize', `Row ${rowIndex}: gender "${rawGender}" → "${normalizedGender}"`, {
+  vDebug('Migration', 'normalize', `Row ${rowIndex}: gender "${rawGender}" → "${normalizedGender}"`, {
     raw: rawGender, normalized: normalizedGender,
   });
   payload.guestGender = normalizedGender;
@@ -558,14 +631,26 @@ function buildPayload(
   // Optional: requirements / special requests
   const requirements = get('Requirements');
   if (requirements) {
-    debug('Migration', 'payload', `Row ${rowIndex}: requirements captured but omitted from payload`, {
+    vDebug('Migration', 'payload', `Row ${rowIndex}: requirements captured but omitted from payload`, {
       requirements,
     });
   }
 
-  // Optional: ETA
+  // Optional: ETA — normalize to HH:mm (fail row if present but unparseable).
   const eta = get('ETA');
-  if (eta) payload.estimatedArrivalTime = eta;
+  if (eta) {
+    const normalizedEta = normalizeApiTime(eta);
+    if (!normalizedEta) {
+      return {
+        payload: null,
+        error: `Invalid ETA "${eta}"`,
+        errorCategory: 'VALIDATION_ERROR',
+        normalizedEmail,
+        finalEmail,
+      };
+    }
+    payload.estimatedArrivalTime = normalizedEta;
+  }
 
   // Rate was resolved earlier (roomRateID is embedded inside the rooms array).
 
@@ -585,11 +670,25 @@ function buildPayload(
   const groupCode = get('Group Code');
   if (groupCode) payload.groupCode = groupCode;
 
-  // Optional: creation date
+  // Optional: creation date — normalize to `YYYY-MM-DD HH:mm:ss` (ISO 8601
+  // compatible). Fail the row if a value is supplied but unparseable; skip
+  // the field entirely when blank.
   const creationDate = get('Creation Date');
-  if (creationDate) payload.dateCreated = creationDate;
+  if (creationDate) {
+    const normalizedCreation = normalizeApiDateTime(creationDate);
+    if (!normalizedCreation) {
+      return {
+        payload: null,
+        error: `Invalid creation date "${creationDate}"`,
+        errorCategory: 'VALIDATION_ERROR',
+        normalizedEmail,
+        finalEmail,
+      };
+    }
+    payload.dateCreated = normalizedCreation;
+  }
 
-  debug('Migration', 'payload', `Row ${rowIndex}: payload built`, {
+  vDebug('Migration', 'payload', `Row ${rowIndex}: payload built`, {
     rowIndex,
     startDate: payload.startDate,
     endDate: payload.endDate,
@@ -603,7 +702,7 @@ function buildPayload(
   // Consolidated per-row summary containing every raw → normalized value and
   // the resolved IDs. This is the single entry to inspect when investigating
   // a specific row.
-  info('Migration', 'row-summary', `Row ${rowIndex}: summary`, {
+  vInfo('Migration', 'row-summary', `Row ${rowIndex}: summary`, {
     rowIndex,
     bucket,
     roomType: {
@@ -740,6 +839,14 @@ export async function migrateReservations(
 
   info('Migration', 'parse', `Parsed ${rows.length} rows`);
 
+  // File-size-based log verbosity. Small files keep detailed per-row DEBUG
+  // output; larger files fall back to ERROR + batch INFO only so the log
+  // tail stays useful.
+  const verbose = rows.length <= VERBOSE_ROW_LIMIT;
+  const rowDebug: typeof debug = verbose ? debug : () => {};
+  const rowInfo: typeof info = verbose ? info : () => {};
+  info('Migration', 'verbosity', `Row-level logging ${verbose ? 'ENABLED' : 'SUPPRESSED'} (row count ${rows.length}, threshold ${VERBOSE_ROW_LIMIT})`);
+
   // Initialize progress
   const migrationRows: MigrationRow[] = rows.map((_, i) => ({
     rowNumber: i + 2, // +2: 1-indexed + header row
@@ -808,6 +915,7 @@ export async function migrateReservations(
       sourceDefaults,
       rates,
       rateDefaults,
+      verbose,
     );
     mRow.normalizedEmail = cleanedEmail;
     mRow.finalEmail = payloadEmail;
@@ -835,30 +943,55 @@ export async function migrateReservations(
     emitProgress();
 
     try {
-      debug('Migration', 'send', `Sending row ${mRow.rowNumber}`, {
+      rowDebug('Migration', 'send', `Sending row ${mRow.rowNumber}`, {
         url: postUrl,
         payload: { ...payload, propertyID: '***' },
       });
 
       const result = await window.electronAPI.apiPost({ url: postUrl, apiKey, body: payload });
 
-      debug('Migration', 'response', `Row ${mRow.rowNumber}: HTTP ${result.status}`, {
+      rowDebug('Migration', 'response', `Row ${mRow.rowNumber}: HTTP ${result.status}`, {
         ok: result.ok, status: result.status,
         data: result.data,
         rawText: result.rawText,
         error: result.error,
       });
 
+      mRow.apiHttpStatus = result.status;
+      mRow.apiResponse = result.data;
       if (result.ok) {
-        const respData = result.data as { success?: boolean; data?: { reservationID?: string }; message?: string } | null;
+        const respData = result.data as {
+          success?: boolean;
+          data?: {
+            reservationID?: string | number;
+            guestID?: string | number;
+            guestEmail?: string;
+            guestFirstName?: string;
+            guestLastName?: string;
+            status?: string;
+            startDate?: string;
+            endDate?: string;
+            dateCreated?: string;
+          };
+          message?: string;
+        } | null;
         if (respData?.success) {
+          const data = respData.data ?? {};
           mRow.status = 'success';
-          mRow.reservationId = String(respData.data?.reservationID ?? '');
+          mRow.reservationId = data.reservationID != null ? String(data.reservationID) : '';
+          mRow.guestId = data.guestID != null ? String(data.guestID) : undefined;
+          mRow.guestEmail = data.guestEmail ?? undefined;
+          mRow.guestFirstName = data.guestFirstName ?? undefined;
+          mRow.guestLastName = data.guestLastName ?? undefined;
+          mRow.responseStatus = data.status ?? undefined;
+          mRow.responseStartDate = data.startDate ?? undefined;
+          mRow.responseEndDate = data.endDate ?? undefined;
+          mRow.dateCreated = data.dateCreated ?? undefined;
           mRow.message = mRow.reservationId
             ? `Created reservation ${mRow.reservationId}`
             : 'Reservation created';
           progress.succeeded++;
-          info('Migration', 'success', `Row ${mRow.rowNumber}: ${mRow.message}`);
+          rowInfo('Migration', 'success', `Row ${mRow.rowNumber}: ${mRow.message}`);
         } else {
           const parsedError = parseApiFailure(result.status, result.data, result.error, result.rawText);
           mRow.status = 'failed';
@@ -877,7 +1010,7 @@ export async function migrateReservations(
             response: respData,
           });
           if (!respData?.message) {
-            debug('Migration', 'api-error-raw', `Row ${mRow.rowNumber}: raw API failure response`, {
+            rowDebug('Migration', 'api-error-raw', `Row ${mRow.rowNumber}: raw API failure response`, {
               status: result.status,
               rawText: result.rawText,
               data: result.data,
@@ -902,7 +1035,7 @@ export async function migrateReservations(
           parsedError,
         });
         if (parsedError.reason === 'Unknown error — check payload or API response') {
-          debug('Migration', 'api-error-raw', `Row ${mRow.rowNumber}: raw HTTP failure response`, {
+          rowDebug('Migration', 'api-error-raw', `Row ${mRow.rowNumber}: raw HTTP failure response`, {
             status: result.status,
             rawText: result.rawText,
             data: result.data,

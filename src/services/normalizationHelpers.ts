@@ -342,6 +342,324 @@ export function normalizeSourceKey(raw: string | null | undefined): string {
     .trim();
 }
 
+// ===========================================================================
+// Date / time
+// ===========================================================================
+//
+// Centralized date normalization used by the Reservation migration flow.
+//
+// Accepted raw formats:
+//   - YYYY-MM-DD                           (ISO date, preferred)
+//   - YYYY-MM-DD HH:mm[:ss]                (ISO date + time)
+//   - ISO 8601 with 'T' and optional tz    ("2026-04-15T09:30:00", "...Z")
+//   - DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY   (EU / TR bias, day-first)
+//   - MM/DD/YYYY                           (US fallback when unambiguous)
+//   - Excel serial numbers (e.g. 45015)
+//   - Anything JS `new Date()` can parse reliably
+//
+// Philosophy:
+//   - Never silently produce a wrong date. If the value is ambiguous in a
+//     way the helper cannot resolve, return null and let the caller treat it
+//     as a validation error.
+//   - When both EU (day-first) and US (month-first) interpretations are
+//     possible and different, we prefer day-first — the migration operators
+//     are in Turkey / Europe. When day-first is impossible (e.g. "13/05/2026"
+//     with day > 12), we disambiguate naturally.
+//
+
+/**
+ * Convert a numeric Excel date serial to a UTC Date.
+ *
+ * Excel's epoch is 1900-01-01 but it has a 1900 leap-year bug: the fictional
+ * Feb 29, 1900 (serial 60) exists. Serials ≥ 60 shift by one day.
+ */
+function excelSerialToDate(serial: number): Date | null {
+  if (!Number.isFinite(serial) || serial < 1 || serial > 2958465) return null;
+  // Day 1 = 1900-01-01; adjust for 1900 bug.
+  const shift = serial >= 60 ? 1 : 0;
+  const ms = Math.round((serial - 25569 - shift) * 86400 * 1000);
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+function formatYmd(year: number, month: number, day: number): string {
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
+}
+
+function formatYmdHms(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+): string {
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  const ss = String(second).padStart(2, '0');
+  return `${formatYmd(year, month, day)} ${hh}:${mm}:${ss}`;
+}
+
+function isValidYmd(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (year < 1900 || year > 2999) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > 31) return false;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day
+  );
+}
+
+interface ParsedDateParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  hasTime: boolean;
+}
+
+function apply12HourSuffix(hour: number, suffix: string | null): number | null {
+  if (!suffix) return hour;
+  const s = suffix.toLowerCase();
+  if (s !== 'am' && s !== 'pm') return null;
+  if (hour < 1 || hour > 12) return null;
+  if (s === 'am') return hour === 12 ? 0 : hour;
+  return hour === 12 ? 12 : hour + 12;
+}
+
+function parseTimeTail(tail: string): { hour: number; minute: number; second: number } | null {
+  const trimmed = tail.trim();
+  if (!trimmed) return { hour: 0, minute: 0, second: 0 };
+  // e.g. "09:30", "09:30:15", "9:30 AM", "14:00:00"
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/.exec(trimmed);
+  if (!m) return null;
+  const rawHour = Number(m[1]);
+  const minute = Number(m[2]);
+  const second = m[3] ? Number(m[3]) : 0;
+  const suffix = m[4] ?? null;
+  if (minute < 0 || minute > 59 || second < 0 || second > 59) return null;
+  const hour = suffix ? apply12HourSuffix(rawHour, suffix) : rawHour;
+  if (hour == null || hour < 0 || hour > 23) return null;
+  return { hour, minute, second };
+}
+
+function parseAnyDate(raw: unknown): ParsedDateParts | null {
+  if (raw == null) return null;
+
+  // Excel date objects (SheetJS with cellDates)
+  if (raw instanceof Date) {
+    if (isNaN(raw.getTime())) return null;
+    return {
+      year: raw.getUTCFullYear(),
+      month: raw.getUTCMonth() + 1,
+      day: raw.getUTCDate(),
+      hour: raw.getUTCHours(),
+      minute: raw.getUTCMinutes(),
+      second: raw.getUTCSeconds(),
+      hasTime: raw.getUTCHours() !== 0 || raw.getUTCMinutes() !== 0 || raw.getUTCSeconds() !== 0,
+    };
+  }
+
+  // Numeric Excel serial
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return null;
+    const d = excelSerialToDate(raw);
+    if (!d) return null;
+    return {
+      year: d.getUTCFullYear(),
+      month: d.getUTCMonth() + 1,
+      day: d.getUTCDate(),
+      hour: d.getUTCHours(),
+      minute: d.getUTCMinutes(),
+      second: d.getUTCSeconds(),
+      hasTime: d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0 || d.getUTCSeconds() !== 0,
+    };
+  }
+
+  let str = String(raw).trim();
+  if (!str) return null;
+
+  // Purely numeric string → treat as Excel serial
+  if (/^\d+(?:\.\d+)?$/.test(str)) {
+    const n = Number(str);
+    const d = excelSerialToDate(n);
+    if (!d) return null;
+    return {
+      year: d.getUTCFullYear(),
+      month: d.getUTCMonth() + 1,
+      day: d.getUTCDate(),
+      hour: d.getUTCHours(),
+      minute: d.getUTCMinutes(),
+      second: d.getUTCSeconds(),
+      hasTime: d.getUTCHours() !== 0 || d.getUTCMinutes() !== 0 || d.getUTCSeconds() !== 0,
+    };
+  }
+
+  // ISO-like date (optionally with T-separator and timezone):
+  //   2026-04-15
+  //   2026-04-15 09:30
+  //   2026-04-15T09:30:00
+  //   2026-04-15T09:30:00Z
+  //   2026-04-15T09:30:00+03:00
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:?\d{2})?)?$/.exec(str);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    const day = Number(isoMatch[3]);
+    if (!isValidYmd(year, month, day)) return null;
+    const hasTime = !!isoMatch[4];
+    const hour = hasTime ? Number(isoMatch[4]) : 0;
+    const minute = hasTime ? Number(isoMatch[5]) : 0;
+    const second = isoMatch[6] ? Number(isoMatch[6]) : 0;
+    if (hasTime && (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59)) return null;
+    return { year, month, day, hour, minute, second, hasTime };
+  }
+
+  // Split off optional time tail for slash/dot/dash dates.
+  let timeParts: { hour: number; minute: number; second: number } | null = {
+    hour: 0,
+    minute: 0,
+    second: 0,
+  };
+  let hasTime = false;
+  const spaceIdx = str.indexOf(' ');
+  if (spaceIdx > 0) {
+    const tail = str.slice(spaceIdx + 1);
+    const parsedTail = parseTimeTail(tail);
+    if (parsedTail) {
+      timeParts = parsedTail;
+      hasTime = true;
+      str = str.slice(0, spaceIdx).trim();
+    }
+  }
+
+  // DD/MM/YYYY or MM/DD/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const numeric = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec(str);
+  if (numeric) {
+    const a = Number(numeric[1]);
+    const b = Number(numeric[2]);
+    const year = Number(numeric[3]);
+    // Day-first bias. If day-first is invalid but month-first is valid,
+    // take month-first. If both valid and different, day-first wins (EU/TR).
+    const dayFirstValid = isValidYmd(year, b, a);
+    const monthFirstValid = isValidYmd(year, a, b);
+    if (dayFirstValid) {
+      return {
+        year,
+        month: b,
+        day: a,
+        hour: timeParts!.hour,
+        minute: timeParts!.minute,
+        second: timeParts!.second,
+        hasTime,
+      };
+    }
+    if (monthFirstValid) {
+      return {
+        year,
+        month: a,
+        day: b,
+        hour: timeParts!.hour,
+        minute: timeParts!.minute,
+        second: timeParts!.second,
+        hasTime,
+      };
+    }
+    return null;
+  }
+
+  // YYYY/MM/DD or YYYY.MM.DD
+  const isoAlt = /^(\d{4})[./](\d{1,2})[./](\d{1,2})$/.exec(str);
+  if (isoAlt) {
+    const year = Number(isoAlt[1]);
+    const month = Number(isoAlt[2]);
+    const day = Number(isoAlt[3]);
+    if (!isValidYmd(year, month, day)) return null;
+    return {
+      year,
+      month,
+      day,
+      hour: timeParts!.hour,
+      minute: timeParts!.minute,
+      second: timeParts!.second,
+      hasTime,
+    };
+  }
+
+  // Last resort: let JS Date handle it (covers JS Date.toString() etc.)
+  const fallback = new Date(str);
+  if (!isNaN(fallback.getTime())) {
+    return {
+      year: fallback.getUTCFullYear(),
+      month: fallback.getUTCMonth() + 1,
+      day: fallback.getUTCDate(),
+      hour: fallback.getUTCHours(),
+      minute: fallback.getUTCMinutes(),
+      second: fallback.getUTCSeconds(),
+      hasTime:
+        fallback.getUTCHours() !== 0 ||
+        fallback.getUTCMinutes() !== 0 ||
+        fallback.getUTCSeconds() !== 0,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Normalize any supported date input to `YYYY-MM-DD`.
+ * Returns null when the input cannot be interpreted unambiguously.
+ * Time components, if any, are discarded.
+ */
+export function normalizeApiDate(raw: unknown): string | null {
+  const parts = parseAnyDate(raw);
+  if (!parts) return null;
+  if (!isValidYmd(parts.year, parts.month, parts.day)) return null;
+  return formatYmd(parts.year, parts.month, parts.day);
+}
+
+/**
+ * Normalize any supported date-time input to `YYYY-MM-DD HH:mm:ss`.
+ * Date-only inputs are padded with 00:00:00.
+ * Returns null when the input cannot be interpreted.
+ */
+export function normalizeApiDateTime(raw: unknown): string | null {
+  const parts = parseAnyDate(raw);
+  if (!parts) return null;
+  if (!isValidYmd(parts.year, parts.month, parts.day)) return null;
+  return formatYmdHms(parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second);
+}
+
+/**
+ * Normalize a time-of-day input (e.g. ETA) to `HH:mm`.
+ * Accepts "14:00", "14:00:00", "2 PM", "2:30 pm", or a full date-time string.
+ * Returns null when the input cannot be interpreted.
+ */
+export function normalizeApiTime(raw: unknown): string | null {
+  if (raw == null) return null;
+  const str = String(raw).trim();
+  if (!str) return null;
+
+  // Plain time-only first.
+  const timeOnly = parseTimeTail(str);
+  if (timeOnly) {
+    return `${String(timeOnly.hour).padStart(2, '0')}:${String(timeOnly.minute).padStart(2, '0')}`;
+  }
+
+  // Otherwise, try as a full date-time and pull the time off the end.
+  const parts = parseAnyDate(raw);
+  if (!parts || !parts.hasTime) return null;
+  return `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
+}
+
 /**
  * Produce a comparison key for rate matching:
  *  - lowercase
