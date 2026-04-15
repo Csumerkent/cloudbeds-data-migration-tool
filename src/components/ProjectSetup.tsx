@@ -5,6 +5,7 @@ import RoomConfiguration from './pages/RoomConfiguration';
 import RateConfiguration from './pages/RateConfiguration';
 import ExcelConfiguration from './pages/ExcelConfiguration';
 import SystemSettings from './pages/SystemSettings';
+import ControlledBatch from './pages/ControlledBatch';
 
 const SETUP_TABS = [
   'System Settings',
@@ -13,6 +14,7 @@ const SETUP_TABS = [
   'Room Configuration',
   'Rate Configuration',
   'Excel',
+  'Bulk Import',
 ] as const;
 
 type SetupTab = (typeof SETUP_TABS)[number];
@@ -24,6 +26,7 @@ const TAB_COMPONENTS: Record<SetupTab, React.FC> = {
   'Room Configuration': RoomConfiguration,
   'Rate Configuration': RateConfiguration,
   'Excel': ExcelConfiguration,
+  'Bulk Import': ControlledBatch,
 };
 
 function ProjectSetup() {

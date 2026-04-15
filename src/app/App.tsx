@@ -1,11 +1,25 @@
-import { useState } from 'react';
-import Sidebar, { type NavItem } from '../components/Sidebar';
+import { useEffect, useState } from 'react';
+import Sidebar, { NAV_ITEMS, type NavItem } from '../components/Sidebar';
 import PageContent from '../components/PageContent';
 import '../components/Sidebar.css';
 import './App.css';
 
 function App() {
   const [activePage, setActivePage] = useState<NavItem>('Project Setup');
+
+  // Global navigation handle: other screens dispatch a `navigate-to-page`
+  // CustomEvent to jump to a specific sidebar entry (e.g. "Debug Tool")
+  // without needing props drilled in from App.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const target = (e as CustomEvent).detail;
+      if (typeof target === 'string' && (NAV_ITEMS as readonly string[]).includes(target)) {
+        setActivePage(target as NavItem);
+      }
+    };
+    window.addEventListener('navigate-to-page', handler as EventListener);
+    return () => window.removeEventListener('navigate-to-page', handler as EventListener);
+  }, []);
 
   return (
     <div className="app">
